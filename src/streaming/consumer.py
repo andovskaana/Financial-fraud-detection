@@ -23,6 +23,8 @@ import threading
 import numpy as np
 import joblib
 import requests
+import pandas as pd
+from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -56,6 +58,11 @@ class FraudDetector:
         self.feature_state = None
         self.model_version = "1.0"
         self._lock = threading.Lock()
+        # State for sequential and geographic rules
+        self.user_consecutive_anomalies = defaultdict(int)
+        self.user_last_tx_info: Dict[str, tuple] = {}
+        self.sequential_threshold = 2      # flag anomaly after 2 previous anomalies
+        self.geo_window_seconds = 3600     # one-hour window for country changes
 
     def load(self):
         """Load model and initialize feature state."""
@@ -79,32 +86,95 @@ class FraudDetector:
             feature_vector.reshape(1, -1)
         )[0, 1])
 
-        is_anomaly = fraud_score >= self.config.anomaly_threshold
+        # Determine base anomaly
+        base_anomaly = fraud_score >= self.config.anomaly_threshold
+
+        # Sequential and geographic rules
+        user_id = transaction.get(self.config.sender_col)
+        ts_raw = transaction.get(self.config.timestamp_col)
+        # Parse timestamp
+        try:
+            current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
+        except Exception:
+            current_ts = None
+        country = None
+        if hasattr(self.config, 'sender_country_col') and self.config.sender_country_col:
+            country = transaction.get(self.config.sender_country_col)
+
+        # Geographic rule: different country within one hour
+        geo_anomaly = False
+        if user_id is not None and current_ts is not None:
+            last_info = self.user_last_tx_info.get(user_id)
+            if last_info:
+                last_ts, last_country = last_info
+                if last_country and country and last_country != country:
+                    if (current_ts - last_ts).total_seconds() <= self.geo_window_seconds:
+                        geo_anomaly = True
+
+        # Sequential rule: flag if user had N consecutive anomalies
+        seq_anomaly = False
+        if user_id is not None:
+            seq_anomaly = self.user_consecutive_anomalies.get(user_id, 0) >= self.sequential_threshold
+
+        final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
+
+        # Update state counters
+        if user_id is not None:
+            self.user_consecutive_anomalies[user_id] = (
+                self.user_consecutive_anomalies.get(user_id, 0) + 1
+            ) if final_anomaly else 0
+            self.user_last_tx_info[user_id] = (current_ts, country)
 
         return {
             'fraud_score': fraud_score,
-            'is_anomaly': is_anomaly
+            'is_anomaly': final_anomaly
         }
 
     def predict_batch(self, transactions: List[Dict]) -> List[Dict]:
         """Predict fraud for a batch of transactions."""
         predictions = []
-
         with self._lock:
-            # Process sequentially for proper feature state
             feature_vectors = []
+            # Process sequentially for proper feature state
             for tx in transactions:
                 fv = self.feature_state.get_feature_vector(tx)
                 feature_vectors.append(fv)
-
         # Batch prediction
         X = np.array(feature_vectors)
         fraud_scores = self.model.predict_proba(X)[:, 1]
 
-        for score in fraud_scores:
+        for tx, score in zip(transactions, fraud_scores):
+            fraud_score = float(score)
+            base_anomaly = fraud_score >= self.config.anomaly_threshold
+            user_id = tx.get(self.config.sender_col)
+            ts_raw = tx.get(self.config.timestamp_col)
+            try:
+                current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
+            except Exception:
+                current_ts = None
+            country = None
+            if hasattr(self.config, 'sender_country_col') and self.config.sender_country_col:
+                country = tx.get(self.config.sender_country_col)
+            geo_anomaly = False
+            if user_id is not None and current_ts is not None:
+                last_info = self.user_last_tx_info.get(user_id)
+                if last_info:
+                    last_ts, last_country = last_info
+                    if last_country and country and last_country != country:
+                        if (current_ts - last_ts).total_seconds() <= self.geo_window_seconds:
+                            geo_anomaly = True
+            seq_anomaly = False
+            if user_id is not None:
+                seq_anomaly = self.user_consecutive_anomalies.get(user_id, 0) >= self.sequential_threshold
+            final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
+            if user_id is not None:
+                self.user_consecutive_anomalies[user_id] = (
+                    self.user_consecutive_anomalies.get(user_id, 0) + 1
+                ) if final_anomaly else 0
+                self.user_last_tx_info[user_id] = (current_ts, country)
             predictions.append({
-                'fraud_score': float(score),
-                'is_anomaly': float(score) >= self.config.anomaly_threshold
+                'fraud_score': fraud_score,
+                'is_anomaly': final_anomaly
             })
 
         return predictions

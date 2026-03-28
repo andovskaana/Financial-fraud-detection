@@ -9,7 +9,6 @@ This script:
 5. Evaluates and finds optimal threshold
 6. Saves model and config
 """
-
 import os
 import sys
 import argparse
@@ -46,6 +45,7 @@ from src.training.features import (
     FeatureConfig, ColumnDetector, BatchFeatureEngineer
 )
 from src.training.evaluate import FraudModelEvaluator, print_class_distribution
+from src.training.ensemble import EnsembleClassifier  # import ensemble
 
 warnings.filterwarnings('ignore')
 
@@ -121,8 +121,8 @@ def prepare_target(df: pd.DataFrame, config: FeatureConfig) -> pd.Series:
     # Handle different possible formats
     if target.dtype == 'object':
         target = target.map({'True': 1, 'False': 0, 'true': 1, 'false': 0,
-                            'yes': 1, 'no': 0, 'Yes': 1, 'No': 0,
-                            '1': 1, '0': 0}).fillna(0)
+                             'yes': 1, 'no': 0, 'Yes': 1, 'No': 0,
+                             '1': 1, '0': 0}).fillna(0)
 
     return target.astype(int)
 
@@ -210,7 +210,7 @@ def train_model(
     Args:
         X_train: Training features
         y_train: Training labels
-        model_type: 'xgboost', 'lightgbm', or 'random_forest'
+        model_type: 'xgboost', 'lightgbm', 'random_forest', or 'ensemble'
         scale_pos_weight: Weight for positive class (computed if None)
     """
     print(f"\n{'='*60}")
@@ -237,6 +237,7 @@ def train_model(
             random_state=42,
             n_jobs=-1
         )
+        model.fit(X_train, y_train)
     elif model_type == 'lightgbm' and HAS_LGB:
         model = lgb.LGBMClassifier(
             n_estimators=200,
@@ -249,6 +250,53 @@ def train_model(
             n_jobs=-1,
             verbose=-1
         )
+        model.fit(X_train, y_train)
+    elif model_type == 'ensemble':
+        # Ensemble: train multiple base models and average their probabilities
+        models = []
+        # Train XGBoost if available
+        if HAS_XGB:
+            xgb_model = xgb.XGBClassifier(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                scale_pos_weight=scale_pos_weight,
+                use_label_encoder=False,
+                eval_metric='logloss',
+                random_state=42,
+                n_jobs=-1
+            )
+            xgb_model.fit(X_train, y_train)
+            models.append(xgb_model)
+        # Train LightGBM if available
+        if HAS_LGB:
+            lgb_model = lgb.LGBMClassifier(
+                n_estimators=200,
+                max_depth=6,
+                learning_rate=0.1,
+                subsample=0.8,
+                colsample_bytree=0.8,
+                scale_pos_weight=scale_pos_weight,
+                random_state=42,
+                n_jobs=-1,
+                verbose=-1
+            )
+            lgb_model.fit(X_train, y_train)
+            models.append(lgb_model)
+        # Always include RandomForest as fallback
+        rf_model = RandomForestClassifier(
+            n_estimators=200,
+            max_depth=10,
+            class_weight='balanced',
+            random_state=42,
+            n_jobs=-1
+        )
+        rf_model.fit(X_train, y_train)
+        models.append(rf_model)
+        # Wrap base models into ensemble classifier
+        model = EnsembleClassifier(models)
     else:
         print(f"Falling back to RandomForest...")
         # For RandomForest, use class_weight
@@ -259,9 +307,7 @@ def train_model(
             random_state=42,
             n_jobs=-1
         )
-
-    print("Training model...")
-    model.fit(X_train, y_train)
+        model.fit(X_train, y_train)
 
     print("Training complete!")
     return model
@@ -286,7 +332,8 @@ def save_artifacts(
     model,
     config: FeatureConfig,
     output_dir: str,
-    model_name: str = 'fraud_model'
+    model_name: str = 'fraud_model',
+    extra_metadata: dict = None
 ):
     """Save model and configuration artifacts."""
     print(f"\n{'='*60}")
@@ -315,6 +362,14 @@ def save_artifacts(
         'trained_at': datetime.now().isoformat(),
         'feature_columns': config.feature_columns
     }
+
+    # If ensemble, record base model names
+    if hasattr(model, 'models'):
+        metadata['base_models'] = [type(m).__name__ for m in model.models]
+
+    # Merge extra metadata (e.g., amount statistics)
+    if extra_metadata:
+        metadata.update(extra_metadata)
 
     metadata_path = output_path / 'model_metadata.json'
     import json
@@ -354,7 +409,7 @@ def main():
     parser.add_argument(
         '--model-type', '-m',
         type=str,
-        choices=['xgboost', 'lightgbm', 'random_forest'],
+        choices=['xgboost', 'lightgbm', 'random_forest', 'ensemble'],
         default='xgboost',
         help='Model type to train'
     )
@@ -503,8 +558,21 @@ def main():
         save_path=str(plots_dir / 'confusion_matrix.png')
     )
 
+    # Compute amount statistics for metadata (average, min, max)
+    amount_stats = {}
+    if config.amount_col in df.columns:
+        try:
+            amounts = df[config.amount_col].astype(float)
+            amount_stats = {
+                'average_amount': float(amounts.mean()),
+                'min_amount': float(amounts.min()),
+                'max_amount': float(amounts.max())
+            }
+        except Exception:
+            amount_stats = {}
+
     # Save artifacts
-    save_artifacts(model, config, args.output)
+    save_artifacts(model, config, args.output, extra_metadata=amount_stats)
 
     # Save holdout for streaming simulation (original data, not feature-engineered)
     data_dir = Path(args.output) / 'data'
