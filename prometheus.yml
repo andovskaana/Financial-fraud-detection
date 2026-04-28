@@ -1,14 +1,8 @@
-global:
-  scrape_interval: 15s
-  evaluation_interval: 15s
+﻿global:
+  scrape_interval: 5s
 
 scrape_configs:
-  - job_name: 'fraud-monitoring'
-    static_configs:
-      - targets: ['monitoring:9090']
+  - job_name: "fraud-monitoring"
     metrics_path: /metrics
-
-  - job_name: 'predict-service'
     static_configs:
-      - targets: ['predict-service:8000']
-    metrics_path: /metrics
+      - targets: ["monitoring:9090"]
