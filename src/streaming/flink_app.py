@@ -1,5 +1,8 @@
+import glob
 import json
 import os
+import sys
+from pathlib import Path
 
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.common.serialization import SimpleStringSchema
@@ -30,7 +33,7 @@ class FraudMapFunction(MapFunction):
 
     def map(self, value):
         try:
-            # 🔥 Fix 1: handle bytes properly
+            # Fix 1: handle bytes properly
             if isinstance(value, (bytes, bytearray)):
                 value = value.decode("utf-8")
 
@@ -44,8 +47,90 @@ class FraudMapFunction(MapFunction):
         enriched["fraud_score"] = result["fraud_score"]
         enriched["is_anomaly"] = result["is_anomaly"]
 
-        # 🔥 Fix 2: always return STRING (not bytes, not weird object)
+        # Fix 2: always return STRING (not bytes, not weird object)
         return json.dumps(enriched)
+
+def _find_kafka_jar() -> str:
+    """
+    Locate the Flink Kafka connector JAR and return it as a file:// URI.
+
+    Search order (first match wins):
+      1. FLINK_KAFKA_JAR env var  — explicit override, highest priority
+      2. Sibling jars/ directory next to this file  — project-local copy
+      3. PyFlink's own bundled jars  — installed alongside apache-flink
+      4. Common system install paths  — /opt/flink, /usr/local/flink, etc.
+      5. Anywhere on PATH that flink binary knows about
+
+    Raises RuntimeError with clear instructions if nothing is found.
+    """
+    JAR_GLOB = "flink-sql-connector-kafka*.jar"
+
+    def to_uri(path: str) -> str:
+        # Normalise to forward slashes and prefix with file:///
+        p = Path(path).resolve()
+        return p.as_uri()          # pathlib gives correct file:// on all OSes
+
+    # 1. Explicit env var
+    env_jar = os.environ.get("FLINK_KAFKA_JAR", "").strip()
+    if env_jar:
+        if not Path(env_jar).is_file():
+            raise FileNotFoundError(
+                f"FLINK_KAFKA_JAR is set to '{env_jar}' but the file does not exist."
+            )
+        return to_uri(env_jar)
+
+    # 2. jars/ folder next to this script
+    script_dir = Path(__file__).resolve().parent
+    for candidate in sorted((script_dir / "jars").glob(JAR_GLOB)):
+        return to_uri(str(candidate))
+
+    # 3. PyFlink bundled jars  (site-packages/pyflink/lib/)
+    try:
+        import pyflink
+        pyflink_lib = Path(pyflink.__file__).parent / "lib"
+        for candidate in sorted(pyflink_lib.glob(JAR_GLOB)):
+            return to_uri(str(candidate))
+    except ImportError:
+        pass
+
+    # 4. Common system install paths
+    system_roots = [
+        "/opt/flink/lib",
+        "/opt/flink/plugins/kafka",
+        "/usr/local/flink/lib",
+        "/usr/lib/flink/lib",
+        # Docker image convention used in confluentinc/cp-flink
+        "/opt/bitnami/flink/lib",
+    ]
+    for root in system_roots:
+        for candidate in sorted(glob.glob(os.path.join(root, JAR_GLOB))):
+            return to_uri(candidate)
+
+    # 5. Walk FLINK_HOME if set
+    flink_home = os.environ.get("FLINK_HOME", "").strip()
+    if flink_home:
+        for candidate in sorted(
+            glob.glob(os.path.join(flink_home, "**", JAR_GLOB), recursive=True)
+        ):
+            return to_uri(candidate)
+
+    # Nothing found — give the user a clear fix
+    raise RuntimeError(
+        "\n"
+        "Could not locate the Flink Kafka connector JAR.\n"
+        "Fix any ONE of the following:\n\n"
+        "  Option A (recommended) — drop the JAR next to flink_app.py:\n"
+        "    mkdir -p src/streaming/jars\n"
+        "    # copy flink-sql-connector-kafka-*.jar into that folder\n\n"
+        "  Option B — set an env var (docker-compose or shell):\n"
+        "    FLINK_KAFKA_JAR=/absolute/path/to/flink-sql-connector-kafka-3.4.0-1.20.jar\n\n"
+        "  Option C — put it in FLINK_HOME/lib:\n"
+        "    export FLINK_HOME=/opt/flink\n"
+        "    cp flink-sql-connector-kafka-*.jar $FLINK_HOME/lib/\n\n"
+        "Download the JAR from:\n"
+        "  https://repo1.maven.org/maven2/org/apache/flink/"
+        "flink-sql-connector-kafka/3.4.0-1.20/\n"
+    )
 
 
 def main():
@@ -60,10 +145,10 @@ def main():
     env = StreamExecutionEnvironment.get_execution_environment()
     env.set_parallelism(1)
 
-    # 🔥 Fix 3: make sure Kafka connector is loaded BEFORE anything
-    env.add_jars("file:///C:/flink-jars/flink-sql-connector-kafka-3.4.0-1.20.jar")
+    # Locate the Kafka connector JAR — works on Windows, Linux, macOS, and Docker.
+    env.add_jars(_find_kafka_jar())
 
-    # ✅ SOURCE
+    #  SOURCE
     source = KafkaSource.builder() \
         .set_bootstrap_servers(kafka_bootstrap) \
         .set_topics(input_topic) \
@@ -77,16 +162,16 @@ def main():
         "Kafka Source"
     )
 
-    # 🔥 Fix 4: enforce string type early
+    #  Fix 4: enforce string type early
     stream = stream.map(
         lambda x: x.decode("utf-8") if isinstance(x, (bytes, bytearray)) else x,
         output_type=Types.STRING()
     )
 
-    # ✅ Processing
+    #  Processing
     enriched_stream = stream.map(
         FraudMapFunction(model_path, config_path),
-        output_type=Types.STRING()   # 🔥 Fix 5: VERY IMPORTANT
+        output_type=Types.STRING()   #  Fix 5: VERY IMPORTANT
     ).filter(lambda x: x is not None)
 
     anomalies = enriched_stream.filter(
@@ -97,7 +182,7 @@ def main():
         lambda x: not json.loads(x)["is_anomaly"]
     )
 
-    # ✅ SINKS
+    #  SINKS
     anomaly_sink = KafkaSink.builder() \
         .set_bootstrap_servers(kafka_bootstrap) \
         .set_record_serializer(
