@@ -20,6 +20,12 @@ import numpy as np
 import joblib
 import pandas as pd
 from collections import defaultdict
+
+try:
+    import shap
+    HAS_SHAP = True
+except ImportError:
+    HAS_SHAP = False
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -54,6 +60,10 @@ class ModelState:
     sequential_threshold: int = 2
     geo_window_seconds: int = 3600
 
+    # R12/R13: SHAP explainer (initialised after model load)
+    explainer = None
+    shap_feature_hits: Dict[str, int] = {}  # feature_name -> hit count
+
 
 state = ModelState()
 
@@ -83,6 +93,7 @@ class PredictionResult(BaseModel):
     is_anomaly: bool
     model_version: str
     processing_time_ms: float
+    top_shap_features: Optional[List[Dict[str, Any]]] = None  # R13: top-3 SHAP features for fraud
 
 
 class BatchPredictionResult(BaseModel):
@@ -118,6 +129,18 @@ def load_model():
         # Initialize streaming feature state
         state.feature_state = StreamingFeatureState(state.config)
         logger.info("Feature state initialized")
+
+        # R12/R13: initialise SHAP explainer
+        if HAS_SHAP:
+            try:
+                state.explainer = shap.TreeExplainer(state.model)
+                state.shap_feature_hits = defaultdict(int)
+                logger.info("SHAP TreeExplainer initialised")
+            except Exception as shap_err:
+                logger.warning(f"Could not initialise SHAP explainer: {shap_err}")
+                state.explainer = None
+        else:
+            logger.warning("shap package not installed — per-prediction SHAP disabled")
 
         # Initialize rule state
         state.user_consecutive_anomalies = defaultdict(int)
@@ -233,6 +256,30 @@ async def predict_single(transaction: Transaction):
         # R5: update previous fraud count after this transaction is evaluated.
         state.feature_state.update_fraud_count(tx_dict, final_anomaly)
 
+        # R12/R13: compute top-3 SHAP features for fraud predictions
+        top_shap = None
+        if final_anomaly and state.explainer is not None:
+            try:
+                sv = state.explainer.shap_values(feature_vector.reshape(1, -1))
+                if isinstance(sv, list):       # binary classifier returns [neg, pos]
+                    sv = sv[1]
+                sv = sv[0]                      # shape (n_features)
+                feature_cols = state.config.feature_columns
+                top3 = sorted(
+                    zip(feature_cols, sv),
+                    key=lambda x: abs(x[1]),
+                    reverse=True
+                )[:3]
+                top_shap = [
+                    {'feature': f, 'shap_value': round(float(v), 4)}
+                    for f, v in top3
+                ]
+                # Increment per-feature hit counter (R13 Prometheus)
+                for f, _ in top3:
+                    state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
+            except Exception as shap_err:
+                logger.debug(f"SHAP per-prediction failed: {shap_err}")
+
         processing_time = (time.time() - start_time) * 1000
         state.prediction_count += 1
 
@@ -241,7 +288,8 @@ async def predict_single(transaction: Transaction):
             fraud_score=fraud_score,
             is_anomaly=final_anomaly,
             model_version=MODEL_VERSION,
-            processing_time_ms=processing_time
+            processing_time_ms=processing_time,
+            top_shap_features=top_shap
         )
 
     except Exception as e:
@@ -317,6 +365,29 @@ async def predict_batch(batch: TransactionBatch):
             # R5: update previous fraud count after current evaluation.
             state.feature_state.update_fraud_count(tx_dict, final_anomaly)
 
+            # R12/R13: compute top-3 SHAP features for fraud predictions
+            top_shap = None
+            if final_anomaly and state.explainer is not None:
+                try:
+                    sv = state.explainer.shap_values(feature_vector.reshape(1, -1))
+                    if isinstance(sv, list):
+                        sv = sv[1]
+                    sv = sv[0]
+                    feature_cols = state.config.feature_columns
+                    top3 = sorted(
+                        zip(feature_cols, sv),
+                        key=lambda x: abs(x[1]),
+                        reverse=True
+                    )[:3]
+                    top_shap = [
+                        {'feature': f, 'shap_value': round(float(v), 4)}
+                        for f, v in top3
+                    ]
+                    for f, _ in top3:
+                        state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
+                except Exception as shap_err:
+                    logger.debug(f"SHAP per-prediction (batch) failed: {shap_err}")
+
             if final_anomaly:
                 anomaly_count += 1
 
@@ -325,7 +396,8 @@ async def predict_batch(batch: TransactionBatch):
                 fraud_score=fraud_score,
                 is_anomaly=final_anomaly,
                 model_version=MODEL_VERSION,
-                processing_time_ms=0  # calculated at batch level
+                processing_time_ms=0,  # calculated at batch level
+                top_shap_features=top_shap
             ))
 
         processing_time = (time.time() - start_time) * 1000
@@ -363,7 +435,33 @@ async def get_metrics():
         uptime = (datetime.utcnow() - state.load_time).total_seconds()
         metrics.append(f'fraud_service_uptime_seconds {uptime}')
 
+    # R13: SHAP feature hit counters
+    for feature, count in state.shap_feature_hits.items():
+        safe_feat = feature.replace(' ', '_').replace('-', '_')
+        metrics.append(f'shap_feature_hits_total{{feature="{safe_feat}"}} {count}')
+
     return "\n".join(metrics)
+
+
+@app.get("/shap-stats")
+async def get_shap_stats():
+    """Return accumulated SHAP feature hit counts (R13)."""
+    if not state.is_loaded:
+        raise HTTPException(status_code=503, detail="Model not loaded")
+
+    sorted_hits = sorted(
+        state.shap_feature_hits.items(),
+        key=lambda x: x[1],
+        reverse=True
+    )
+    return {
+        "shap_available": state.explainer is not None,
+        "total_fraud_predictions_with_shap": sum(state.shap_feature_hits.values()),
+        "top_features": [
+            {"feature": f, "hit_count": c}
+            for f, c in sorted_hits[:20]
+        ]
+    }
 
 
 @app.post("/reset-state")

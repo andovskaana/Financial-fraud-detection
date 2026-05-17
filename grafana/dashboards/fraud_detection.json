@@ -4,85 +4,254 @@
   "schemaVersion": 38,
   "version": 1,
   "refresh": "5s",
-  "time": { "from": "now-30m", "to": "now" },
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
   "panels": [
     {
       "id": 1,
       "type": "stat",
       "title": "Total Processed",
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "blue", "value": null }] } } },
-      "targets": [{ "datasource": "Prometheus", "expr": "fraud_processed_total", "legendFormat": "Total" }]
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_processed_total",
+          "legendFormat": "Total"
+        }
+      ]
     },
     {
       "id": 2,
       "type": "stat",
       "title": "Total Anomalies",
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "red", "value": null }] } } },
-      "targets": [{ "datasource": "Prometheus", "expr": "fraud_anomalies_total", "legendFormat": "Anomalies" }]
+      "gridPos": {
+        "x": 4,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_anomalies_total",
+          "legendFormat": "Anomalies"
+        }
+      ]
     },
     {
       "id": 3,
       "type": "stat",
       "title": "Fraud Rate %",
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "gridPos": {
+        "x": 8,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background"
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
           "thresholds": {
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 5 },
-              { "color": "red", "value": 15 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 15
+              }
             ]
           }
         }
       },
-      "targets": [{
-        "datasource": "Prometheus",
-        "expr": "100 * fraud_anomalies_total / clamp_min(fraud_processed_total, 1)",
-        "legendFormat": "Fraud %"
-      }]
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 * fraud_anomalies_total / clamp_min(fraud_processed_total, 1)",
+          "legendFormat": "Fraud %"
+        }
+      ]
     },
     {
       "id": 4,
       "type": "stat",
       "title": "Avg Anomaly Amount",
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "value", "graphMode": "none" },
-      "fieldConfig": { "defaults": { "unit": "currencyUSD", "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "yellow", "value": null }] } } },
-      "targets": [{ "datasource": "Prometheus", "expr": "fraud_avg_anomaly_amount", "legendFormat": "Avg Amount" }]
+      "gridPos": {
+        "x": 12,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "value",
+        "graphMode": "none"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "currencyUSD",
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "yellow",
+                "value": null
+              }
+            ]
+          }
+        }
+      },
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_avg_anomaly_amount",
+          "legendFormat": "Avg Amount"
+        }
+      ]
     },
     {
       "id": 5,
       "type": "stat",
       "title": "Anomalies / sec (60s window)",
-      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "colorMode": "background" },
+      "gridPos": {
+        "x": 16,
+        "y": 0,
+        "w": 4,
+        "h": 4
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "colorMode": "background"
+      },
       "fieldConfig": {
         "defaults": {
           "thresholds": {
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 5 }
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "orange",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 5
+              }
             ]
           }
         }
       },
-      "targets": [{ "datasource": "Prometheus", "expr": "fraud_anomaly_rate", "legendFormat": "Anomaly rate" }]
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_anomaly_rate",
+          "legendFormat": "Anomaly rate"
+        }
+      ]
     },
     {
       "id": 6,
       "type": "timeseries",
       "title": "Transactions per Second",
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
-      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2 } } },
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
       "targets": [
         {
           "datasource": "Prometheus",
@@ -105,57 +274,229 @@
       "id": 7,
       "type": "timeseries",
       "title": "Fraud Rate Over Time (%)",
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
       "fieldConfig": {
         "defaults": {
           "unit": "percent",
-          "custom": { "lineWidth": 2 },
-          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 10 }] }
+          "custom": {
+            "lineWidth": 2
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 10
+              }
+            ]
+          }
         }
       },
-      "targets": [{
-        "datasource": "Prometheus",
-        "expr": "100 * rate(fraud_anomalies_total[1m]) / clamp_min(rate(fraud_processed_total[1m]), 0.001)",
-        "legendFormat": "Fraud rate %"
-      }]
+      "targets": [
+        {
+          "datasource": "Prometheus",
+          "expr": "100 * rate(fraud_anomalies_total[1m]) / clamp_min(rate(fraud_processed_total[1m]), 0.001)",
+          "legendFormat": "Fraud rate %"
+        }
+      ]
     },
     {
       "id": 8,
       "type": "bargauge",
       "title": "Fraud Score Distribution",
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "horizontal", "displayMode": "gradient" },
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ]
+        },
+        "orientation": "horizontal",
+        "displayMode": "gradient"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "continuous-GrYlRd" },
-          "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] }
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "thresholds": {
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
         }
       },
       "targets": [
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.1\"}", "legendFormat": "0.0 – 0.1" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.2\"}", "legendFormat": "0.1 – 0.2" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.3\"}", "legendFormat": "0.2 – 0.3" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.4\"}", "legendFormat": "0.3 – 0.4" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.5\"}", "legendFormat": "0.4 – 0.5" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.6\"}", "legendFormat": "0.5 – 0.6" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.7\"}", "legendFormat": "0.6 – 0.7" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.8\"}", "legendFormat": "0.7 – 0.8" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"0.9\"}", "legendFormat": "0.8 – 0.9" },
-        { "datasource": "Prometheus", "expr": "fraud_score_bucket{le=\"1.0\"}", "legendFormat": "0.9 – 1.0" }
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.1\"}",
+          "legendFormat": "0.0 \u2013 0.1"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.2\"}",
+          "legendFormat": "0.1 \u2013 0.2"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.3\"}",
+          "legendFormat": "0.2 \u2013 0.3"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.4\"}",
+          "legendFormat": "0.3 \u2013 0.4"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.5\"}",
+          "legendFormat": "0.4 \u2013 0.5"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.6\"}",
+          "legendFormat": "0.5 \u2013 0.6"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.7\"}",
+          "legendFormat": "0.6 \u2013 0.7"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.8\"}",
+          "legendFormat": "0.7 \u2013 0.8"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"0.9\"}",
+          "legendFormat": "0.8 \u2013 0.9"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "fraud_score_bucket{le=\"1.0\"}",
+          "legendFormat": "0.9 \u2013 1.0"
+        }
       ]
     },
     {
       "id": 9,
       "type": "timeseries",
       "title": "Model Predictions (Predict Service)",
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "options": { "legend": { "displayMode": "list", "placement": "bottom" } },
-      "fieldConfig": { "defaults": { "custom": { "lineWidth": 2 } } },
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "lineWidth": 2
+          }
+        }
+      },
       "targets": [
-        { "datasource": "Prometheus", "expr": "rate(fraud_predictions_total[1m])", "legendFormat": "Predictions/s" },
-        { "datasource": "Prometheus", "expr": "rate(fraud_errors_total[1m])", "legendFormat": "Errors/s" }
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(fraud_predictions_total[1m])",
+          "legendFormat": "Predictions/s"
+        },
+        {
+          "datasource": "Prometheus",
+          "expr": "rate(fraud_errors_total[1m])",
+          "legendFormat": "Errors/s"
+        }
       ]
+    },
+    {
+      "id": 10,
+      "title": "Top Fraud-Driving Features (SHAP)",
+      "type": "barchart",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "fillOpacity": 80,
+            "gradientMode": "none",
+            "lineWidth": 1,
+            "tooltipDisplayMode": "multi"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "barRadius": 0.05,
+        "barWidth": 0.7,
+        "groupWidth": 0.7,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom"
+        },
+        "orientation": "horizontal",
+        "tooltip": {
+          "mode": "multi"
+        },
+        "xTickLabelRotation": 0,
+        "xTickLabelSpacing": 100
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "topk(10, sum by(feature)(shap_feature_hits_total))",
+          "instant": true,
+          "legendFormat": "{{feature}}",
+          "refId": "A"
+        }
+      ],
+      "description": "Features appearing most often in top-3 SHAP explanations for fraud predictions (R13)"
     }
   ]
 }

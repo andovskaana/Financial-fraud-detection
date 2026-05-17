@@ -38,6 +38,12 @@ try:
 except ImportError:
     HAS_LGB = False
 
+try:
+    import shap
+    HAS_SHAP = True
+except ImportError:
+    HAS_SHAP = False
+
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
@@ -519,8 +525,12 @@ def main():
     df_holdout_fe = feature_engineer.transform(df_holdout)
 
     # Prepare feature matrices
-    X_train = df_train_fe[feature_cols].values
-    X_test = df_test_fe[feature_cols].values
+    # Cast to float64 explicitly: some feature columns (e.g. label-encoded
+    # categoricals whose source column was object dtype) may still be stored
+    # as object in the DataFrame. XGBoost silently coerces these, but SHAP's
+    # C layer does not and raises "could not convert string to float".
+    X_train = df_train_fe[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float64)
+    X_test = df_test_fe[feature_cols].apply(pd.to_numeric, errors='coerce').fillna(0).values.astype(np.float64)
 
     print(f"\nFeature matrix shapes:")
     print(f"  X_train: {X_train.shape}")
@@ -599,6 +609,18 @@ def main():
         save_path=str(plots_dir / 'confusion_matrix.png')
     )
 
+    # ── R12 / R13 ── SHAP explainability ────────────────────────────────────
+    # Moved to shap_explain.py to handle dtype edge-cases cleanly.
+    # After this script finishes, run:
+    #   python shap_explain.py --data <path/to/data> --output <output_dir>
+    shap_importance_dict = {}
+    print(f"\n{'='*60}")
+    print(" SHAP Explainability")
+    print(f"{'='*60}")
+    print(" Skipped in train.py — run separately for reliable results:")
+    print(f"   python shap_explain.py --data {args.data} --output {args.output}")
+    # ── end SHAP ────────────────────────────────────────────────────────────
+
     # Compute amount statistics for metadata (average, min, max)
     amount_stats = {}
     if config.amount_col in df.columns:
@@ -613,7 +635,10 @@ def main():
             amount_stats = {}
 
     # Save artifacts
-    save_artifacts(model, config, args.output, extra_metadata=amount_stats)
+    extra_meta = {**amount_stats}
+    if shap_importance_dict:
+        extra_meta['shap_top10_features'] = shap_importance_dict
+    save_artifacts(model, config, args.output, extra_metadata=extra_meta)
 
     # Save holdout for streaming simulation (original data, not feature-engineered)
     data_dir = Path(args.output) / 'data'

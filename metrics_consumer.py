@@ -53,6 +53,9 @@ class MetricsCollector:
         # Amount statistics
         self.anomaly_amounts = deque(maxlen=1000)
 
+        # R13: SHAP feature hit counts (feature_name -> cumulative count)
+        self.shap_feature_hits: dict = defaultdict(int)
+
         # Processing stats
         self.start_time = datetime.utcnow()
         self.last_message_time = None
@@ -83,6 +86,13 @@ class MetricsCollector:
             # Amount
             amount = message.get('amount', 0)
             self.anomaly_amounts.append(amount)
+
+            # R13: accumulate SHAP feature hits if present in the message
+            top_shap = message.get('top_shap_features') or []
+            for entry in top_shap:
+                feat = entry.get('feature')
+                if feat:
+                    self.shap_feature_hits[feat] += 1
 
             self.last_message_time = datetime.utcnow()
 
@@ -155,6 +165,11 @@ class MetricsCollector:
         # Score histogram
         for bucket, count in metrics['score_distribution'].items():
             lines.append(f'fraud_score_bucket{{le="{(bucket+1)/10:.1f}"}} {count}')
+
+        # R13: SHAP feature hit counters
+        for feature, count in self.shap_feature_hits.items():
+            safe_feat = feature.replace(' ', '_').replace('-', '_')
+            lines.append(f'shap_feature_hits_total{{feature="{safe_feat}"}} {count}')
 
         return '\n'.join(lines)
 
