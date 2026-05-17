@@ -4,7 +4,8 @@ providers:
   - name: fraud-detection
     folder: Fraud Detection
     type: file
-    disableDeletion: true
-    editable: false
+    disableDeletion: false
+    editable: true
+    allowUiUpdates: true
     options:
       path: /var/lib/grafana/dashboards

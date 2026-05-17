@@ -1,8 +1,8 @@
 {
-  "title": "Fraud Detection",
-  "uid": "fraud-detection",
+  "title": "Financial Fraud Detection - Fixed SHAP",
+  "uid": "fraud-detection-shap-fixed",
   "schemaVersion": 38,
-  "version": 1,
+  "version": 21,
   "refresh": "5s",
   "time": {
     "from": "now-30m",
@@ -45,11 +45,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_processed_total",
           "legendFormat": "Total"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 2,
@@ -87,11 +94,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_anomalies_total",
           "legendFormat": "Anomalies"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 3,
@@ -134,11 +148,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "100 * fraud_anomalies_total / clamp_min(fraud_processed_total, 1)",
           "legendFormat": "Fraud %"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 4,
@@ -177,11 +198,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_avg_anomaly_amount",
           "legendFormat": "Avg Amount"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 5,
@@ -223,11 +251,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_anomaly_rate",
           "legendFormat": "Anomaly rate"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 6,
@@ -254,21 +289,34 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(fraud_processed_total[1m])",
           "legendFormat": "Total tx/s"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(fraud_anomalies_total[1m])",
           "legendFormat": "Anomaly tx/s"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(fraud_normal_total[1m])",
           "legendFormat": "Normal tx/s"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 7,
@@ -308,11 +356,18 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "100 * rate(fraud_anomalies_total[1m]) / clamp_min(rate(fraud_processed_total[1m]), 0.001)",
           "legendFormat": "Fraud rate %"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 8,
@@ -354,56 +409,90 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.1\"}",
           "legendFormat": "0.0 \u2013 0.1"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.2\"}",
           "legendFormat": "0.1 \u2013 0.2"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.3\"}",
           "legendFormat": "0.2 \u2013 0.3"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.4\"}",
           "legendFormat": "0.3 \u2013 0.4"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.5\"}",
           "legendFormat": "0.4 \u2013 0.5"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.6\"}",
           "legendFormat": "0.5 \u2013 0.6"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.7\"}",
           "legendFormat": "0.6 \u2013 0.7"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.8\"}",
           "legendFormat": "0.7 \u2013 0.8"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"0.9\"}",
           "legendFormat": "0.8 \u2013 0.9"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "fraud_score_bucket{le=\"1.0\"}",
           "legendFormat": "0.9 \u2013 1.0"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 9,
@@ -430,21 +519,31 @@
       },
       "targets": [
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(fraud_predictions_total[1m])",
           "legendFormat": "Predictions/s"
         },
         {
-          "datasource": "Prometheus",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
           "expr": "rate(fraud_errors_total[1m])",
           "legendFormat": "Errors/s"
         }
-      ]
+      ],
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      }
     },
     {
       "id": 10,
-      "title": "Top Fraud-Driving Features (SHAP)",
-      "type": "barchart",
+      "title": "Offline SHAP Feature Importance",
+      "type": "bargauge",
       "gridPos": {
         "x": 0,
         "y": 20,
@@ -458,31 +557,39 @@
       "fieldConfig": {
         "defaults": {
           "color": {
-            "mode": "palette-classic"
+            "mode": "continuous-GrYlRd"
           },
-          "custom": {
-            "fillOpacity": 80,
-            "gradientMode": "none",
-            "lineWidth": 1,
-            "tooltipDisplayMode": "multi"
-          }
+          "custom": {},
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
         },
         "overrides": []
       },
       "options": {
-        "barRadius": 0.05,
-        "barWidth": 0.7,
-        "groupWidth": 0.7,
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "namePlacement": "auto",
         "orientation": "horizontal",
-        "tooltip": {
-          "mode": "multi"
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
         },
-        "xTickLabelRotation": 0,
-        "xTickLabelSpacing": 100
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
       },
       "targets": [
         {
@@ -490,13 +597,80 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "topk(10, sum by(feature)(shap_feature_hits_total))",
+          "editorMode": "code",
+          "expr": "topk(10, shap_offline_importance)",
           "instant": true,
           "legendFormat": "{{feature}}",
+          "range": false,
           "refId": "A"
         }
       ],
-      "description": "Features appearing most often in top-3 SHAP explanations for fraud predictions (R13)"
+      "description": "Offline SHAP mean absolute importance from models/shap_importance.json. If online per-transaction SHAP is enabled, use shap_feature_hits_total to see live hit counts."
+    },
+    {
+      "id": 11,
+      "title": "Online SHAP Feature Hits",
+      "type": "bargauge",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "topk(10, sum by(feature)(shap_feature_hits_total))",
+          "instant": true,
+          "legendFormat": "{{feature}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "options": {
+        "displayMode": "gradient",
+        "minVizHeight": 10,
+        "minVizWidth": 0,
+        "namePlacement": "auto",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true,
+        "sizing": "auto",
+        "valueMode": "color"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "continuous-GrYlRd"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      }
     }
   ]
 }

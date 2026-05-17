@@ -122,6 +122,9 @@ services:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_ANOMALY_TOPIC=anomaly_transactions
       - KAFKA_NORMAL_TOPIC=normal_transactions
+      - SHAP_IMPORTANCE_PATH=/app/models/shap_importance.json
+    volumes:
+      - ./models:/app/models:ro
     restart: unless-stopped
 
   # Transaction Simulator (produces test transactions)

@@ -63,6 +63,11 @@ class FraudDetector:
         self.user_last_tx_info: Dict[str, tuple] = {}
         self.sequential_threshold = 2      # flag anomaly after 2 previous anomalies
         self.geo_window_seconds = 3600     # one-hour window for country changes
+        # R13: per-prediction SHAP support for the local consumer path.
+        # This is needed because docker-compose runs fraud-consumer in local mode,
+        # so the FastAPI predict-service SHAP endpoint is not used by default.
+        self._xgb_native_shap = False
+        self.explainer = None
 
     def load(self):
         """Load model and initialize feature state."""
@@ -74,8 +79,79 @@ class FraudDetector:
 
         self.feature_state = StreamingFeatureState(self.config)
 
+        # R13: enable SHAP explanations in the local streaming consumer.
+        # Prefer XGBoost native pred_contribs=True because it is exact Tree SHAP
+        # and avoids SHAP/XGBoost base_score parsing issues in some versions.
+        try:
+            import xgboost as xgb
+            if isinstance(self.model, xgb.XGBClassifier):
+                self._xgb_native_shap = True
+                logger.info("Local SHAP enabled via XGBoost native pred_contribs=True")
+            else:
+                import shap
+                self.explainer = shap.TreeExplainer(self.model)
+                logger.info("Local SHAP enabled via shap.TreeExplainer")
+        except Exception as shap_err:
+            logger.warning(f"Local SHAP disabled: {shap_err}")
+            self._xgb_native_shap = False
+            self.explainer = None
+
         logger.info(f"Detector ready. Threshold: {self.config.anomaly_threshold}")
         return self
+
+    def _compute_shap_values(self, feature_vector: np.ndarray) -> Optional[np.ndarray]:
+        """Compute one SHAP contribution per configured feature.
+
+        Returns None if SHAP is unavailable. For XGBoost, native
+        pred_contribs=True returns exact Tree SHAP values plus a final bias
+        column; the bias column is removed before returning.
+        """
+        try:
+            x = np.asarray(feature_vector, dtype=np.float64).reshape(1, -1)
+            feature_cols = self.config.feature_columns
+
+            if self._xgb_native_shap:
+                import xgboost as xgb
+                dmat = xgb.DMatrix(x, feature_names=feature_cols)
+                contribs = self.model.get_booster().predict(
+                    dmat, pred_contribs=True, validate_features=False
+                )
+                if contribs.ndim == 3:
+                    if contribs.shape[1] == len(feature_cols) + 1:
+                        contribs = contribs[:, :, 1]
+                    else:
+                        contribs = contribs[:, 1, :]
+                return np.asarray(contribs[0, :-1], dtype=np.float64)
+
+            if self.explainer is not None:
+                sv = self.explainer.shap_values(x)
+                if isinstance(sv, list):
+                    sv = sv[1]
+                if hasattr(sv, 'values'):
+                    sv = sv.values
+                sv = np.asarray(sv)
+                if sv.ndim == 3:
+                    sv = sv[:, :, 1]
+                return np.asarray(sv[0], dtype=np.float64)
+        except Exception as exc:
+            logger.debug(f"Local SHAP calculation failed: {exc}")
+        return None
+
+    def _top_shap_features(self, feature_vector: np.ndarray, limit: int = 3) -> List[Dict]:
+        """Return the top SHAP drivers for this transaction."""
+        shap_values = self._compute_shap_values(feature_vector)
+        if shap_values is None:
+            return []
+
+        top = sorted(
+            zip(self.config.feature_columns, shap_values),
+            key=lambda item: abs(item[1]),
+            reverse=True
+        )[:limit]
+        return [
+            {'feature': feature, 'shap_value': round(float(value), 6)}
+            for feature, value in top
+        ]
 
     def predict(self, transaction: Dict) -> Dict:
         """Predict fraud for a single transaction."""
@@ -130,10 +206,19 @@ class FraudDetector:
         with self._lock:
             self.feature_state.update_fraud_count(transaction, final_anomaly)
 
-        return {
+        result = {
             'fraud_score': fraud_score,
             'is_anomaly': final_anomaly
         }
+
+        # R13: only attach per-transaction SHAP for anomaly messages to keep
+        # Kafka payloads small while still feeding the Grafana SHAP panel.
+        if final_anomaly:
+            top_shap = self._top_shap_features(feature_vector, limit=3)
+            if top_shap:
+                result['top_shap_features'] = top_shap
+
+        return result
 
     # NEW SLOWER BUT CORRECT SEQUENTIAL WAY
     def predict_batch(self, transactions: List[Dict]) -> List[Dict]:
@@ -225,13 +310,16 @@ class APIFraudDetector:
             response.raise_for_status()
 
             result = response.json()
-            return [
-                {
+            predictions = []
+            for p in result['predictions']:
+                pred = {
                     'fraud_score': p['fraud_score'],
                     'is_anomaly': p['is_anomaly']
                 }
-                for p in result['predictions']
-            ]
+                if p.get('top_shap_features'):
+                    pred['top_shap_features'] = p['top_shap_features']
+                predictions.append(pred)
+            return predictions
 
         except Exception as e:
             logger.error(f"API prediction failed: {e}")

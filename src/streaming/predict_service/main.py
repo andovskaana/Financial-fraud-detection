@@ -67,6 +67,44 @@ class ModelState:
 
 state = ModelState()
 
+
+def compute_shap_vector(feature_vector: np.ndarray) -> Optional[np.ndarray]:
+    """Return per-feature SHAP contributions for one transaction.
+
+    For XGBoost models, avoid shap.TreeExplainer because newer XGBoost stores
+    base_score as '[5E-1]', which some SHAP versions cannot parse. XGBoost's
+    native pred_contribs=True is exact Tree SHAP and returns n_features + bias.
+    """
+    try:
+        import xgboost as xgb
+        if isinstance(state.model, xgb.XGBClassifier):
+            feature_cols = state.config.feature_columns
+            x = np.asarray(feature_vector, dtype=np.float64).reshape(1, -1)
+            dmat = xgb.DMatrix(x, feature_names=feature_cols)
+            contribs = state.model.get_booster().predict(
+                dmat, pred_contribs=True, validate_features=False
+            )
+            if contribs.ndim == 3:
+                if contribs.shape[1] == len(feature_cols) + 1:
+                    contribs = contribs[:, :, 1]
+                else:
+                    contribs = contribs[:, 1, :]
+            return contribs[0, :-1]  # drop bias column
+    except Exception as exc:
+        logger.debug(f"XGBoost native SHAP failed: {exc}")
+
+    if state.explainer is None:
+        return None
+
+    sv = state.explainer.shap_values(np.asarray(feature_vector, dtype=np.float64).reshape(1, -1))
+    if isinstance(sv, list):
+        sv = sv[1]
+    if hasattr(sv, 'values'):
+        sv = sv.values
+    if sv.ndim == 3:
+        sv = sv[:, :, 1]
+    return sv[0]
+
 # Request/Response models
 class Transaction(BaseModel):
     transaction_id: str
@@ -130,17 +168,24 @@ def load_model():
         state.feature_state = StreamingFeatureState(state.config)
         logger.info("Feature state initialized")
 
-        # R12/R13: initialise SHAP explainer
-        if HAS_SHAP:
-            try:
+        # R12/R13: initialise SHAP. For XGBoost, compute SHAP with native
+        # Booster.predict(pred_contribs=True) at prediction time because newer
+        # XGBoost base_score values such as '[5E-1]' break shap.TreeExplainer.
+        try:
+            import xgboost as xgb
+            if isinstance(state.model, xgb.XGBClassifier):
+                state.explainer = None
+                state.shap_feature_hits = defaultdict(int)
+                logger.info("SHAP enabled via XGBoost native pred_contribs=True")
+            elif HAS_SHAP:
                 state.explainer = shap.TreeExplainer(state.model)
                 state.shap_feature_hits = defaultdict(int)
                 logger.info("SHAP TreeExplainer initialised")
-            except Exception as shap_err:
-                logger.warning(f"Could not initialise SHAP explainer: {shap_err}")
-                state.explainer = None
-        else:
-            logger.warning("shap package not installed — per-prediction SHAP disabled")
+            else:
+                logger.warning("shap package not installed — per-prediction SHAP disabled")
+        except Exception as shap_err:
+            logger.warning(f"Could not initialise SHAP support: {shap_err}")
+            state.explainer = None
 
         # Initialize rule state
         state.user_consecutive_anomalies = defaultdict(int)
@@ -258,25 +303,23 @@ async def predict_single(transaction: Transaction):
 
         # R12/R13: compute top-3 SHAP features for fraud predictions
         top_shap = None
-        if final_anomaly and state.explainer is not None:
+        if final_anomaly:
             try:
-                sv = state.explainer.shap_values(feature_vector.reshape(1, -1))
-                if isinstance(sv, list):       # binary classifier returns [neg, pos]
-                    sv = sv[1]
-                sv = sv[0]                      # shape (n_features)
-                feature_cols = state.config.feature_columns
-                top3 = sorted(
-                    zip(feature_cols, sv),
-                    key=lambda x: abs(x[1]),
-                    reverse=True
-                )[:3]
-                top_shap = [
-                    {'feature': f, 'shap_value': round(float(v), 4)}
-                    for f, v in top3
-                ]
-                # Increment per-feature hit counter (R13 Prometheus)
-                for f, _ in top3:
-                    state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
+                sv = compute_shap_vector(feature_vector)
+                if sv is not None:
+                    feature_cols = state.config.feature_columns
+                    top3 = sorted(
+                        zip(feature_cols, sv),
+                        key=lambda x: abs(x[1]),
+                        reverse=True
+                    )[:3]
+                    top_shap = [
+                        {'feature': f, 'shap_value': round(float(v), 4)}
+                        for f, v in top3
+                    ]
+                    # Increment per-feature hit counter (R13 Prometheus)
+                    for f, _ in top3:
+                        state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
             except Exception as shap_err:
                 logger.debug(f"SHAP per-prediction failed: {shap_err}")
 
@@ -367,24 +410,22 @@ async def predict_batch(batch: TransactionBatch):
 
             # R12/R13: compute top-3 SHAP features for fraud predictions
             top_shap = None
-            if final_anomaly and state.explainer is not None:
+            if final_anomaly:
                 try:
-                    sv = state.explainer.shap_values(feature_vector.reshape(1, -1))
-                    if isinstance(sv, list):
-                        sv = sv[1]
-                    sv = sv[0]
-                    feature_cols = state.config.feature_columns
-                    top3 = sorted(
-                        zip(feature_cols, sv),
-                        key=lambda x: abs(x[1]),
-                        reverse=True
-                    )[:3]
-                    top_shap = [
-                        {'feature': f, 'shap_value': round(float(v), 4)}
-                        for f, v in top3
-                    ]
-                    for f, _ in top3:
-                        state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
+                    sv = compute_shap_vector(feature_vector)
+                    if sv is not None:
+                        feature_cols = state.config.feature_columns
+                        top3 = sorted(
+                            zip(feature_cols, sv),
+                            key=lambda x: abs(x[1]),
+                            reverse=True
+                        )[:3]
+                        top_shap = [
+                            {'feature': f, 'shap_value': round(float(v), 4)}
+                            for f, v in top3
+                        ]
+                        for f, _ in top3:
+                            state.shap_feature_hits[f] = state.shap_feature_hits.get(f, 0) + 1
                 except Exception as shap_err:
                     logger.debug(f"SHAP per-prediction (batch) failed: {shap_err}")
 

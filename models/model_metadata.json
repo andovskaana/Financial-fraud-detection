@@ -45,5 +45,17 @@
   ],
   "average_amount": 358.93426876399997,
   "min_amount": 0.01,
-  "max_amount": 3520.57
+  "max_amount": 3520.57,
+  "shap_top10_features": {
+    "ip_address_encoded": 5.328582286834717,
+    "device_hash_encoded": 0.22789250314235687,
+    "hour": 0.12537376582622528,
+    "amount_to_user_avg_ratio": 0.11696159094572067,
+    "user_min_amount": 0.09727603197097778,
+    "user_avg_amount": 0.09630710631608963,
+    "location_encoded": 0.0789589062333107,
+    "week": 0.07210930436849594,
+    "velocity_score_encoded": 0.06720900535583496,
+    "user_max_amount": 0.06644198298454285
+  }
 }

@@ -273,7 +273,8 @@ class TransactionRouter:
         transaction: Dict,
         is_anomaly: bool,
         fraud_score: float,
-        model_version: str = "1.0"
+        model_version: str = "1.0",
+        extra_fields: Dict = None
     ):
         """
         Route a transaction to the appropriate topic.
@@ -292,6 +293,11 @@ class TransactionRouter:
             'model_version': model_version,
             'processed_at': datetime.utcnow().isoformat()
         }
+
+        # Keep optional prediction metadata such as top_shap_features so the
+        # monitoring service can expose it to Prometheus/Grafana.
+        if extra_fields:
+            enriched.update(extra_fields)
 
         # Route based on prediction
         topic = self.config.anomaly_topic if is_anomaly else self.config.normal_topic
@@ -325,7 +331,11 @@ class TransactionRouter:
             is_anomaly = pred['is_anomaly']
             fraud_score = pred['fraud_score']
 
-            self.route(tx, is_anomaly, fraud_score, model_version)
+            extra_fields = {
+                k: v for k, v in pred.items()
+                if k not in {'is_anomaly', 'fraud_score'}
+            }
+            self.route(tx, is_anomaly, fraud_score, model_version, extra_fields=extra_fields)
 
             if is_anomaly:
                 anomaly_count += 1
