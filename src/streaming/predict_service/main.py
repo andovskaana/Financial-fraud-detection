@@ -230,6 +230,9 @@ async def predict_single(transaction: Transaction):
             ) if final_anomaly else 0
             state.user_last_tx_info[user_id] = (current_ts, country)
 
+        # R5: update previous fraud count after this transaction is evaluated.
+        state.feature_state.update_fraud_count(tx_dict, final_anomaly)
+
         processing_time = (time.time() - start_time) * 1000
         state.prediction_count += 1
 
@@ -263,62 +266,67 @@ async def predict_batch(batch: TransactionBatch):
     anomaly_count = 0
 
     try:
-        # Process each transaction in order (required for streaming features)
-        feature_vectors = []
+        # Process each transaction in order (required for streaming features).
+        # We intentionally predict one-by-one here so prev_fraud_count for later
+        # transactions in the same API batch can include earlier fraud/anomaly
+        # results from the same user.
         for tx in batch.transactions:
             tx_dict = tx.model_dump()
+
             feature_vector = state.feature_state.get_feature_vector(tx_dict)
-            feature_vectors.append(feature_vector)
+            fraud_score = float(state.model.predict_proba(
+                feature_vector.reshape(1, -1)
+            )[0, 1])
 
-        # Batch prediction
-        if feature_vectors:
-            X = np.array(feature_vectors)
-            fraud_scores = state.model.predict_proba(X)[:, 1]
+            base_anomaly = fraud_score >= state.config.anomaly_threshold
+            user_id = tx_dict.get(state.config.sender_col)
+            ts_raw = tx_dict.get(state.config.timestamp_col)
+            country = None
+            if hasattr(state.config, 'sender_country_col') and state.config.sender_country_col:
+                country = tx_dict.get(state.config.sender_country_col)
 
-            # Iterate through transactions and scores sequentially
-            for tx, score in zip(batch.transactions, fraud_scores):
-                tx_dict = tx.model_dump()
-                fraud_score = float(score)
-                base_anomaly = fraud_score >= state.config.anomaly_threshold
-                user_id = tx_dict.get(state.config.sender_col)
-                ts_raw = tx_dict.get(state.config.timestamp_col)
-                country = None
-                if hasattr(state.config, 'sender_country_col') and state.config.sender_country_col:
-                    country = tx_dict.get(state.config.sender_country_col)
-                # Parse timestamp
-                try:
-                    current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
-                except Exception:
-                    current_ts = None
-                # Geographic rule
-                geo_anomaly = False
-                if user_id is not None and current_ts is not None:
-                    last_info = state.user_last_tx_info.get(user_id)
-                    if last_info:
-                        last_ts, last_country = last_info
-                        if last_country and country and last_country != country:
-                            if (current_ts - last_ts).total_seconds() <= state.geo_window_seconds:
-                                geo_anomaly = True
-                # Sequential rule
-                seq_anomaly = False
-                if user_id is not None:
-                    seq_anomaly = state.user_consecutive_anomalies.get(user_id, 0) >= state.sequential_threshold
-                final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
-                # Update counters
-                if user_id is not None:
-                    state.user_consecutive_anomalies[user_id] = (
-                        state.user_consecutive_anomalies.get(user_id, 0) + 1
-                    ) if final_anomaly else 0
-                    state.user_last_tx_info[user_id] = (current_ts, country)
-                if final_anomaly:
-                    anomaly_count += 1
-                predictions.append(PredictionResult(
-                    transaction_id=tx.transaction_id,
-                    fraud_score=fraud_score,
-                    is_anomaly=final_anomaly,
-                    model_version=MODEL_VERSION,
-                    processing_time_ms=0  # calculated at batch level
-                ))
+            try:
+                current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
+            except Exception:
+                current_ts = None
+
+            # Geographic rule
+            geo_anomaly = False
+            if user_id is not None and current_ts is not None:
+                last_info = state.user_last_tx_info.get(user_id)
+                if last_info:
+                    last_ts, last_country = last_info
+                    if last_country and country and last_country != country:
+                        if (current_ts - last_ts).total_seconds() <= state.geo_window_seconds:
+                            geo_anomaly = True
+
+            # Sequential rule
+            seq_anomaly = False
+            if user_id is not None:
+                seq_anomaly = state.user_consecutive_anomalies.get(user_id, 0) >= state.sequential_threshold
+
+            final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
+
+            # Update counters
+            if user_id is not None:
+                state.user_consecutive_anomalies[user_id] = (
+                    state.user_consecutive_anomalies.get(user_id, 0) + 1
+                ) if final_anomaly else 0
+                state.user_last_tx_info[user_id] = (current_ts, country)
+
+            # R5: update previous fraud count after current evaluation.
+            state.feature_state.update_fraud_count(tx_dict, final_anomaly)
+
+            if final_anomaly:
+                anomaly_count += 1
+
+            predictions.append(PredictionResult(
+                transaction_id=tx.transaction_id,
+                fraud_score=fraud_score,
+                is_anomaly=final_anomaly,
+                model_version=MODEL_VERSION,
+                processing_time_ms=0  # calculated at batch level
+            ))
 
         processing_time = (time.time() - start_time) * 1000
         throughput = len(batch.transactions) / (processing_time / 1000) if processing_time > 0 else 0

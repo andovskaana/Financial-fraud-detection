@@ -121,63 +121,82 @@ class FraudDetector:
         # Update state counters
         if user_id is not None:
             self.user_consecutive_anomalies[user_id] = (
-                self.user_consecutive_anomalies.get(user_id, 0) + 1
+                    self.user_consecutive_anomalies.get(user_id, 0) + 1
             ) if final_anomaly else 0
             self.user_last_tx_info[user_id] = (current_ts, country)
+
+        # update previous fraud count only after the current transaction
+        # has been evaluated, so prev_fraud_count never includes itself.
+        with self._lock:
+            self.feature_state.update_fraud_count(transaction, final_anomaly)
 
         return {
             'fraud_score': fraud_score,
             'is_anomaly': final_anomaly
         }
 
+    # NEW SLOWER BUT CORRECT SEQUENTIAL WAY
     def predict_batch(self, transactions: List[Dict]) -> List[Dict]:
-        """Predict fraud for a batch of transactions."""
+        """Predict fraud for a batch of transactions.
+
+        Process sequentially so user-history features remain correct inside the
+        batch. This is important for R5 because prev_fraud_count for transaction
+        N must include prior fraud-labelled transactions from the same user,
+        including earlier transactions from this batch.
+        """
         predictions = []
-        with self._lock:
-            feature_vectors = []
-            # Process sequentially for proper feature state
-            for tx in transactions:
-                fv = self.feature_state.get_feature_vector(tx)
-                feature_vectors.append(fv)
-        # Batch prediction
-        X = np.array(feature_vectors)
-        fraud_scores = self.model.predict_proba(X)[:, 1]
-
-        for tx, score in zip(transactions, fraud_scores):
-            fraud_score = float(score)
-            base_anomaly = fraud_score >= self.config.anomaly_threshold
-            user_id = tx.get(self.config.sender_col)
-            ts_raw = tx.get(self.config.timestamp_col)
-            try:
-                current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
-            except Exception:
-                current_ts = None
-            country = None
-            if hasattr(self.config, 'sender_country_col') and self.config.sender_country_col:
-                country = tx.get(self.config.sender_country_col)
-            geo_anomaly = False
-            if user_id is not None and current_ts is not None:
-                last_info = self.user_last_tx_info.get(user_id)
-                if last_info:
-                    last_ts, last_country = last_info
-                    if last_country and country and last_country != country:
-                        if (current_ts - last_ts).total_seconds() <= self.geo_window_seconds:
-                            geo_anomaly = True
-            seq_anomaly = False
-            if user_id is not None:
-                seq_anomaly = self.user_consecutive_anomalies.get(user_id, 0) >= self.sequential_threshold
-            final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
-            if user_id is not None:
-                self.user_consecutive_anomalies[user_id] = (
-                    self.user_consecutive_anomalies.get(user_id, 0) + 1
-                ) if final_anomaly else 0
-                self.user_last_tx_info[user_id] = (current_ts, country)
-            predictions.append({
-                'fraud_score': fraud_score,
-                'is_anomaly': final_anomaly
-            })
-
+        for tx in transactions:
+            predictions.append(self.predict(tx))
         return predictions
+
+    # def predict_batch(self, transactions: List[Dict]) -> List[Dict]:
+    #     """Predict fraud for a batch of transactions."""
+    #     predictions = []
+    #     with self._lock:
+    #         feature_vectors = []
+    #         # Process sequentially for proper feature state
+    #         for tx in transactions:
+    #             fv = self.feature_state.get_feature_vector(tx)
+    #             feature_vectors.append(fv)
+    #     # Batch prediction
+    #     X = np.array(feature_vectors)
+    #     fraud_scores = self.model.predict_proba(X)[:, 1]
+    #
+    #     for tx, score in zip(transactions, fraud_scores):
+    #         fraud_score = float(score)
+    #         base_anomaly = fraud_score >= self.config.anomaly_threshold
+    #         user_id = tx.get(self.config.sender_col)
+    #         ts_raw = tx.get(self.config.timestamp_col)
+    #         try:
+    #             current_ts = pd.to_datetime(ts_raw) if ts_raw is not None else None
+    #         except Exception:
+    #             current_ts = None
+    #         country = None
+    #         if hasattr(self.config, 'sender_country_col') and self.config.sender_country_col:
+    #             country = tx.get(self.config.sender_country_col)
+    #         geo_anomaly = False
+    #         if user_id is not None and current_ts is not None:
+    #             last_info = self.user_last_tx_info.get(user_id)
+    #             if last_info:
+    #                 last_ts, last_country = last_info
+    #                 if last_country and country and last_country != country:
+    #                     if (current_ts - last_ts).total_seconds() <= self.geo_window_seconds:
+    #                         geo_anomaly = True
+    #         seq_anomaly = False
+    #         if user_id is not None:
+    #             seq_anomaly = self.user_consecutive_anomalies.get(user_id, 0) >= self.sequential_threshold
+    #         final_anomaly = base_anomaly or geo_anomaly or seq_anomaly
+    #         if user_id is not None:
+    #             self.user_consecutive_anomalies[user_id] = (
+    #                 self.user_consecutive_anomalies.get(user_id, 0) + 1
+    #             ) if final_anomaly else 0
+    #             self.user_last_tx_info[user_id] = (current_ts, country)
+    #         predictions.append({
+    #             'fraud_score': fraud_score,
+    #             'is_anomaly': final_anomaly
+    #         })
+    #
+    #     return predictions
 
 
 class APIFraudDetector:
