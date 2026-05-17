@@ -5,7 +5,7 @@ This script:
 1. Loads and explores the dataset
 2. Performs feature engineering
 3. Splits data (60% train, 20% test, 20% streaming holdout)
-4. Trains XGBoost/LightGBM model with class imbalance handling
+4. Trains XGBoost/LightGBM model with class imbalance handling (GPU accelerated if available)
 5. Evaluates and finds optimal threshold
 6. Saves model and config
 """
@@ -13,6 +13,7 @@ import os
 import sys
 import argparse
 import warnings
+import json
 from pathlib import Path
 from datetime import datetime
 
@@ -22,6 +23,7 @@ import joblib
 
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
 
 # Import XGBoost or LightGBM
 try:
@@ -35,8 +37,6 @@ try:
     HAS_LGB = True
 except ImportError:
     HAS_LGB = False
-
-from sklearn.ensemble import RandomForestClassifier
 
 # Add parent directory to path
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
@@ -198,6 +198,24 @@ def split_data(
     return df_train, df_test, df_holdout, y_train, y_test, y_holdout
 
 
+def check_gpu_support(model_type: str) -> bool:
+    """Helper to check if GPU acceleration is actually available and working."""
+    if model_type == 'xgboost' and HAS_XGB:
+        try:
+            xgb.XGBClassifier(device='cuda').fit(np.array([[1]]), np.array([1]))
+            return True
+        except Exception:
+            return False
+
+    elif model_type == 'lightgbm' and HAS_LGB:
+        try:
+            lgb.LGBMClassifier(device_type='gpu', verbose=-1).fit(np.array([[1]]), np.array([1]))
+            return True
+        except Exception:
+            return False
+    return False
+
+
 def train_model(
     X_train: np.ndarray,
     y_train: np.ndarray,
@@ -205,7 +223,7 @@ def train_model(
     scale_pos_weight: float = None
 ):
     """
-    Train the fraud detection model.
+    Train the fraud detection model with smart GPU detection.
 
     Args:
         X_train: Training features
@@ -225,67 +243,91 @@ def train_model(
         print(f"Computed scale_pos_weight: {scale_pos_weight:.2f}")
 
     if model_type == 'xgboost' and HAS_XGB:
-        model = xgb.XGBClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            scale_pos_weight=scale_pos_weight,
-            use_label_encoder=False,
-            eval_metric='logloss',
-            random_state=42,
-            n_jobs=-1
-        )
+        use_gpu = check_gpu_support('xgboost')
+        xgb_params = {
+            'n_estimators': 200,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'scale_pos_weight': scale_pos_weight,
+            'use_label_encoder': False,
+            'eval_metric': 'logloss',
+            'random_state': 42
+        }
+        if use_gpu:
+            print(" NVIDIA GPU detected! Training XGBoost with GPU acceleration.")
+            xgb_params['device'] = 'cuda'
+        else:
+            print(" GPU not available or not configured for XGBoost. Falling back to multi-thread CPU.")
+            xgb_params['n_jobs'] = -1
+
+        model = xgb.XGBClassifier(**xgb_params)
         model.fit(X_train, y_train)
+
     elif model_type == 'lightgbm' and HAS_LGB:
-        model = lgb.LGBMClassifier(
-            n_estimators=200,
-            max_depth=6,
-            learning_rate=0.1,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            scale_pos_weight=scale_pos_weight,
-            random_state=42,
-            n_jobs=-1,
-            verbose=-1
-        )
+        use_gpu = check_gpu_support('lightgbm')
+        lgb_params = {
+            'n_estimators': 200,
+            'max_depth': 6,
+            'learning_rate': 0.1,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'scale_pos_weight': scale_pos_weight,
+            'random_state': 42,
+            'verbose': -1
+        }
+        if use_gpu:
+            print(" NVIDIA GPU detected! Training LightGBM with GPU acceleration.")
+            lgb_params['device_type'] = 'gpu'
+        else:
+            print(" GPU not available or not configured for LightGBM. Falling back to multi-thread CPU.")
+            lgb_params['n_jobs'] = -1
+
+        model = lgb.LGBMClassifier(**lgb_params)
         model.fit(X_train, y_train)
+
     elif model_type == 'ensemble':
-        # Ensemble: train multiple base models and average their probabilities
         models = []
+
         # Train XGBoost if available
         if HAS_XGB:
-            xgb_model = xgb.XGBClassifier(
-                n_estimators=200,
-                max_depth=6,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                scale_pos_weight=scale_pos_weight,
-                use_label_encoder=False,
-                eval_metric='logloss',
-                random_state=42,
-                n_jobs=-1
-            )
+            xgb_use_gpu = check_gpu_support('xgboost')
+            xgb_params = {
+                'n_estimators': 200, 'max_depth': 6, 'learning_rate': 0.1,
+                'subsample': 0.8, 'colsample_bytree': 0.8, 'scale_pos_weight': scale_pos_weight,
+                'use_label_encoder': False, 'eval_metric': 'logloss', 'random_state': 42
+            }
+            if xgb_use_gpu:
+                xgb_params['device'] = 'cuda'
+            else:
+                xgb_params['n_jobs'] = -1
+
+            print(f"Ensemble -> XGBoost: Using {'GPU ' if xgb_use_gpu else 'CPU '}")
+            xgb_model = xgb.XGBClassifier(**xgb_params)
             xgb_model.fit(X_train, y_train)
             models.append(xgb_model)
+
         # Train LightGBM if available
         if HAS_LGB:
-            lgb_model = lgb.LGBMClassifier(
-                n_estimators=200,
-                max_depth=6,
-                learning_rate=0.1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                scale_pos_weight=scale_pos_weight,
-                random_state=42,
-                n_jobs=-1,
-                verbose=-1
-            )
+            lgb_use_gpu = check_gpu_support('lightgbm')
+            lgb_params = {
+                'n_estimators': 200, 'max_depth': 6, 'learning_rate': 0.1,
+                'subsample': 0.8, 'colsample_bytree': 0.8, 'scale_pos_weight': scale_pos_weight,
+                'random_state': 42, 'verbose': -1
+            }
+            if lgb_use_gpu:
+                lgb_params['device_type'] = 'gpu'
+            else:
+                lgb_params['n_jobs'] = -1
+
+            print(f"Ensemble -> LightGBM: Using {'GPU ' if lgb_use_gpu else 'CPU '}")
+            lgb_model = lgb.LGBMClassifier(**lgb_params)
             lgb_model.fit(X_train, y_train)
             models.append(lgb_model)
-        # Always include RandomForest as fallback
+
+        # Always include RandomForest as fallback (CPU bound natively)
+        print("Ensemble -> RandomForest: Using CPU ")
         rf_model = RandomForestClassifier(
             n_estimators=200,
             max_depth=10,
@@ -295,11 +337,11 @@ def train_model(
         )
         rf_model.fit(X_train, y_train)
         models.append(rf_model)
+
         # Wrap base models into ensemble classifier
         model = EnsembleClassifier(models)
     else:
-        print(f"Falling back to RandomForest...")
-        # For RandomForest, use class_weight
+        print(f"Falling back to RandomForest (CPU)...")
         model = RandomForestClassifier(
             n_estimators=200,
             max_depth=10,
@@ -372,7 +414,6 @@ def save_artifacts(
         metadata.update(extra_metadata)
 
     metadata_path = output_path / 'model_metadata.json'
-    import json
     with open(metadata_path, 'w') as f:
         json.dump(metadata, f, indent=2)
     print(f"Metadata saved to: {metadata_path}")

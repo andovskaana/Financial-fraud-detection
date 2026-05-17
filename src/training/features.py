@@ -206,9 +206,8 @@ class BatchFeatureEngineer:
 
     def create_velocity_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Create velocity/rolling window features.
-        This is the batch equivalent of streaming window aggregates.
-        Uses bounded lookback to match streaming constraints.
+        ⚡ OPTIMIZED: Create velocity/rolling window features using pre-allocated arrays.
+        Bypasses slow pandas row-by-row lookups for blazing fast execution.
         """
         df = df.copy()
         sender_col = self.config.sender_col
@@ -222,63 +221,83 @@ class BatchFeatureEngineer:
         if not pd.api.types.is_datetime64_any_dtype(df[ts_col]):
             df[ts_col] = pd.to_datetime(df[ts_col], errors='coerce')
 
-        # Initialize velocity feature columns
+        n_rows = len(df)
+
+        # Pre-allocate dictionaries of numpy arrays to completely replace slow df.loc
+        velocity_data = {}
         for window_min in self.config.velocity_windows_minutes:
-            df[f'tx_count_{window_min}m'] = 0
-            df[f'amount_sum_{window_min}m'] = 0.0
-            df[f'amount_avg_{window_min}m'] = 0.0
+            velocity_data[f'tx_count_{window_min}m'] = np.zeros(n_rows, dtype=np.int32)
+            velocity_data[f'amount_sum_{window_min}m'] = np.zeros(n_rows, dtype=np.float32)
+            velocity_data[f'amount_avg_{window_min}m'] = np.zeros(n_rows, dtype=np.float32)
 
-        df['time_since_last_tx'] = 0.0
-        df['amount_to_rolling_avg_ratio'] = 1.0
+        time_since_last_tx = np.zeros(n_rows, dtype=np.float32)
+        amount_to_rolling_avg_ratio = np.ones(n_rows, dtype=np.float32)
 
-        if self.config.receiver_col and self.config.receiver_col in df.columns:
-            df['unique_receivers_1h'] = 0
+        has_receiver = self.config.receiver_col and self.config.receiver_col in df.columns
+        unique_receivers_1h = np.zeros(n_rows, dtype=np.int32) if has_receiver else None
 
-        # Group by user and compute rolling features
-        # Using bounded history (max_history_per_user)
-        for user_id, group in df.groupby(sender_col):
-            indices = group.index.tolist()
-            timestamps = group[ts_col].values
-            amounts = group[amount_col].values
+        # Extract underlying values to numpy arrays for raw execution speed
+        timestamps = df[ts_col].values.astype('datetime64[ns]').astype(np.int64)  # unix nanoseconds
+        amounts = df[amount_col].values.astype(np.float32)
+        receivers = df[self.config.receiver_col].values if has_receiver else None
 
-            if self.config.receiver_col and self.config.receiver_col in df.columns:
-                receivers = group[self.config.receiver_col].values
-            else:
-                receivers = None
+        max_history = self.config.max_history_per_user
 
+        # Iterate over groups, but perform calculations using positional indexing
+        for _, group in df.groupby(sender_col):
+            indices = group.index.values
+            if len(indices) == 0:
+                continue
+
+            group_ts = timestamps[indices]
+            group_amounts = amounts[indices]
+            group_receivers = receivers[indices] if has_receiver else None
+
+            # Calculate time difference between consecutive transactions instantly via vectorization
+            if len(indices) > 1:
+                time_since_last_tx[indices[1:]] = (group_ts[1:] - group_ts[:-1]) / 1e9
+
+            # Loop through history using the bounded constraint window
             for i, idx in enumerate(indices):
-                current_ts = timestamps[i]
+                current_ts = group_ts[i]
+                lookback_start = max(0, i - max_history)
 
-                # Time since last transaction
-                if i > 0:
-                    time_diff = (current_ts - timestamps[i-1]) / np.timedelta64(1, 's')
-                    df.loc[idx, 'time_since_last_tx'] = max(0, time_diff)
-
-                # Look back with bounded history
-                lookback_start = max(0, i - self.config.max_history_per_user)
+                # Slice arrays directly using raw slices
+                sub_ts = group_ts[lookback_start:i]
+                sub_amounts = group_amounts[lookback_start:i]
 
                 for window_min in self.config.velocity_windows_minutes:
-                    window_ns = window_min * 60 * 1e9  # Convert to nanoseconds
-                    window_delta = np.timedelta64(int(window_ns), 'ns')
+                    window_ns = int(window_min * 60 * 1e9)
 
-                    # Find transactions within window
-                    mask = (current_ts - timestamps[lookback_start:i]) <= window_delta
-                    window_indices = np.arange(lookback_start, i)[mask]
+                    # Compute window mask over slice element via fast array evaluation
+                    mask = (current_ts - sub_ts) <= window_ns
+                    window_amounts = sub_amounts[mask]
+                    n_tx = len(window_amounts)
 
-                    if len(window_indices) > 0:
-                        window_amounts = amounts[window_indices]
-                        df.loc[idx, f'tx_count_{window_min}m'] = len(window_amounts)
-                        df.loc[idx, f'amount_sum_{window_min}m'] = window_amounts.sum()
-                        df.loc[idx, f'amount_avg_{window_min}m'] = window_amounts.mean()
+                    if n_tx > 0:
+                        amt_sum = window_amounts.sum()
+                        velocity_data[f'tx_count_{window_min}m'][idx] = n_tx
+                        velocity_data[f'amount_sum_{window_min}m'][idx] = amt_sum
+                        velocity_data[f'amount_avg_{window_min}m'][idx] = amt_sum / n_tx
 
-                        # Unique receivers in 1h window
-                        if window_min == 60 and receivers is not None:
-                            df.loc[idx, 'unique_receivers_1h'] = len(set(receivers[window_indices]))
+                        # Unique receivers inside 1h window
+                        if window_min == 60 and has_receiver:
+                            window_receivers = group_receivers[lookback_start:i][mask]
+                            unique_receivers_1h[idx] = len(set(window_receivers))
 
                 # Amount to rolling average ratio (24h)
-                rolling_avg = df.loc[idx, 'amount_avg_1440m']
+                rolling_avg = velocity_data['amount_avg_1440m'][idx]
                 if rolling_avg > 0:
-                    df.loc[idx, 'amount_to_rolling_avg_ratio'] = amounts[i] / rolling_avg
+                    amount_to_rolling_avg_ratio[idx] = group_amounts[i] / rolling_avg
+
+        # Assign arrays all at once back to DataFrame
+        df['time_since_last_tx'] = time_since_last_tx
+        df['amount_to_rolling_avg_ratio'] = amount_to_rolling_avg_ratio
+        if has_receiver:
+            df['unique_receivers_1h'] = unique_receivers_1h
+
+        for col_name, array_values in velocity_data.items():
+            df[col_name] = array_values
 
         return df
 
@@ -384,7 +403,7 @@ class BatchFeatureEngineer:
         print("Creating user aggregates...")
         df = self.create_user_aggregates(df)
 
-        print("Creating velocity features (this may take a while for large datasets)...")
+        print("Creating velocity features (Optimized)...")
         df = self.create_velocity_features(df)
 
         print("Creating country features...")

@@ -43,6 +43,7 @@ data/
 
 # Model artifacts (keep structure, ignore large files)
 models/*.joblib
+models/*.json
 models/data/*.csv
 !models/.gitkeep
 !models/data/.gitkeep
