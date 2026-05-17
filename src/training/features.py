@@ -198,6 +198,40 @@ class BatchFeatureEngineer:
 
         df = df.merge(user_stats, on=sender_col, how='left')
 
+        # Previous fraud-labelled transactions for this user.
+        # This is computed chronologically and shifted so the current row's
+        # label is not counted as part of its own history. If the target is
+        # not available, e.g. inference-only transform data, default to 0.
+        target_col = self.config.target_col
+        ts_col = self.config.timestamp_col
+        if target_col in df.columns:
+            fraud_labels = pd.to_numeric(df[target_col], errors='coerce').fillna(0).astype(int)
+            fraud_history_frame = df[[sender_col, ts_col]].copy()
+            fraud_history_frame['_original_index'] = df.index
+            fraud_history_frame['_fraud_label'] = fraud_labels.values
+            fraud_history_frame = fraud_history_frame.sort_values([sender_col, ts_col, '_original_index'])
+            fraud_history_frame['prev_fraud_count'] = (
+                fraud_history_frame
+                .groupby(sender_col)['_fraud_label']
+                .cumsum()
+                .shift(fill_value=0)
+            )
+
+            # The global shift above can carry the previous user's last count
+            # into the first row of the next user, so force each first user row to 0.
+            first_for_user = fraud_history_frame[sender_col].ne(fraud_history_frame[sender_col].shift())
+            fraud_history_frame.loc[first_for_user, 'prev_fraud_count'] = 0
+
+            df['prev_fraud_count'] = (
+                fraud_history_frame
+                .set_index('_original_index')['prev_fraud_count']
+                .reindex(df.index)
+                .fillna(0)
+                .astype(int)
+            )
+        else:
+            df['prev_fraud_count'] = 0
+
         # Amount relative to user's average
         df['amount_to_user_avg_ratio'] = df[amount_col] / (df['user_avg_amount'] + 1e-6)
         df['amount_zscore'] = (df[amount_col] - df['user_avg_amount']) / (df['user_std_amount'] + 1e-6)
@@ -369,7 +403,7 @@ class BatchFeatureEngineer:
 
         # User aggregates
         user_features = ['user_avg_amount', 'user_std_amount', 'user_min_amount',
-                        'user_max_amount', 'user_transaction_count',
+                        'user_max_amount', 'user_transaction_count', 'prev_fraud_count',
                         'amount_to_user_avg_ratio', 'amount_zscore']
         feature_cols.extend([c for c in user_features if c in df.columns])
 
@@ -451,7 +485,10 @@ class StreamingFeatureState:
         self.user_states: Dict[str, Dict] = defaultdict(lambda: {
             'transactions': [],  # List of (timestamp, amount, receiver)
             'total_amount': 0.0,
-            'total_count': 0
+            'total_count': 0,
+            # Number of previous fraud-labelled/anomaly transactions for this user.
+            # Updated after prediction, so the current transaction never counts itself.
+            'fraud_count': 0
         })
         self.max_history = config.max_history_per_user
         self.ttl_seconds = 24 * 60 * 60  # 24 hours TTL
@@ -496,6 +533,10 @@ class StreamingFeatureState:
 
         # Amount
         features[self.config.amount_col] = amount
+
+        # Previous fraud-labelled transactions for this user.
+        # This is read before the current prediction updates fraud_count.
+        features['prev_fraud_count'] = int(state.get('fraud_count', 0))
 
         # Time since last transaction
         if transactions:
@@ -574,6 +615,24 @@ class StreamingFeatureState:
         state['total_count'] += 1
 
         return features
+
+    def update_fraud_count(self, transaction: Dict, is_fraud: bool):
+        """Update per-user previous fraud count after the prediction/label is known.
+
+        The value exposed as prev_fraud_count must represent only transactions
+        before the current one, so this method is intentionally called after
+        model/rule evaluation. In streaming, the prediction is the available
+        fraud label; in offline replay, pass the known ground-truth label.
+        """
+        if not is_fraud:
+            return
+
+        user_id = transaction.get(self.config.sender_col)
+        if user_id is None:
+            return
+
+        state = self.user_states[user_id]
+        state['fraud_count'] = int(state.get('fraud_count', 0)) + 1
 
     def get_feature_vector(self, transaction: Dict) -> np.ndarray:
         """Get feature vector in the same order as training."""
