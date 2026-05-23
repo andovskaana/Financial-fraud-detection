@@ -186,40 +186,69 @@ class MetricsCollector:
             }
 
     def get_prometheus_metrics(self) -> str:
-        """Generate Prometheus-compatible metrics output."""
+        """Generate Prometheus-compatible metrics output (text exposition format)."""
         metrics = self.get_metrics()
         lines = []
 
         # Counters
+        lines.append('# HELP fraud_anomalies_total Total anomalous transactions detected.')
+        lines.append('# TYPE fraud_anomalies_total counter')
         lines.append(f'fraud_anomalies_total {metrics["total_anomalies"]}')
+
+        lines.append('# HELP fraud_normal_total Total normal transactions processed.')
+        lines.append('# TYPE fraud_normal_total counter')
         lines.append(f'fraud_normal_total {metrics["total_normal"]}')
+
+        lines.append('# HELP fraud_processed_total Total transactions processed (anomalies + normal).')
+        lines.append('# TYPE fraud_processed_total counter')
         lines.append(f'fraud_processed_total {metrics["total_processed"]}')
 
         # Gauges
+        lines.append('# HELP fraud_anomaly_rate Anomalous transactions per second (sliding window).')
+        lines.append('# TYPE fraud_anomaly_rate gauge')
         lines.append(f'fraud_anomaly_rate {metrics["anomaly_rate_per_sec"]:.4f}')
+
+        lines.append('# HELP fraud_normal_rate Normal transactions per second (sliding window).')
+        lines.append('# TYPE fraud_normal_rate gauge')
         lines.append(f'fraud_normal_rate {metrics["normal_rate_per_sec"]:.4f}')
+
+        lines.append('# HELP fraud_anomalies_in_window Anomalies in the last observation window.')
+        lines.append('# TYPE fraud_anomalies_in_window gauge')
         lines.append(f'fraud_anomalies_in_window {metrics["anomalies_in_window"]}')
+
+        lines.append('# HELP fraud_avg_anomaly_amount Average transaction amount for anomalies.')
+        lines.append('# TYPE fraud_avg_anomaly_amount gauge')
         lines.append(f'fraud_avg_anomaly_amount {metrics["avg_anomaly_amount"]:.2f}')
+
+        lines.append('# HELP fraud_uptime_seconds Monitoring service uptime in seconds.')
+        lines.append('# TYPE fraud_uptime_seconds gauge')
         lines.append(f'fraud_uptime_seconds {metrics["uptime_seconds"]:.2f}')
 
         # Score histogram
+        lines.append('# HELP fraud_score_bucket Fraud score distribution buckets.')
+        lines.append('# TYPE fraud_score_bucket gauge')
         for bucket, count in metrics['score_distribution'].items():
             lines.append(f'fraud_score_bucket{{le="{(bucket+1)/10:.1f}"}} {count}')
 
         # R13: offline/global SHAP importance from models/shap_importance.json.
-        # This is a Gauge: mean absolute SHAP value per feature.
-        for feature, value in self.offline_shap_importance.items():
-            lines.append(
-                f'shap_offline_importance{{feature="{_prom_label(feature)}"}} {float(value):.10g}'
-            )
+        if self.offline_shap_importance:
+            lines.append('# HELP shap_offline_importance Mean absolute SHAP value per feature (offline training).')
+            lines.append('# TYPE shap_offline_importance gauge')
+            for feature, value in self.offline_shap_importance.items():
+                lines.append(
+                    f'shap_offline_importance{{feature="{_prom_label(feature)}"}} {float(value):.10g}'
+                )
 
         # R13: online SHAP hit counter from top_shap_features in anomaly messages.
-        for feature, count in self.shap_feature_hits.items():
-            lines.append(
-                f'shap_feature_hits_total{{feature="{_prom_label(feature)}"}} {int(count)}'
-            )
+        if self.shap_feature_hits:
+            lines.append('# HELP shap_feature_hits_total Number of times each feature appeared in top-3 SHAP for a fraud prediction.')
+            lines.append('# TYPE shap_feature_hits_total counter')
+            for feature, count in self.shap_feature_hits.items():
+                lines.append(
+                    f'shap_feature_hits_total{{feature="{_prom_label(feature)}"}} {int(count)}'
+                )
 
-        return '\n'.join(lines)
+        return '\n'.join(lines) + '\n'
 
 
 def run_prometheus_server(collector: MetricsCollector, port: int = 9090):

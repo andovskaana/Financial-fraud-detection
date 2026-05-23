@@ -523,16 +523,24 @@
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(fraud_predictions_total[1m])",
-          "legendFormat": "Predictions/s"
+          "expr": "rate(fraud_processed_total[1m])",
+          "legendFormat": "Predictions/s (all)"
         },
         {
           "datasource": {
             "type": "prometheus",
             "uid": "prometheus"
           },
-          "expr": "rate(fraud_errors_total[1m])",
-          "legendFormat": "Errors/s"
+          "expr": "rate(fraud_anomalies_total[1m])",
+          "legendFormat": "Anomalies/s"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "expr": "rate(fraud_normal_total[1m])",
+          "legendFormat": "Normal/s"
         }
       ],
       "datasource": {

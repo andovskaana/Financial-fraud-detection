@@ -3,7 +3,7 @@
   "model_type": "XGBClassifier",
   "feature_count": 37,
   "anomaly_threshold": 0.01,
-  "trained_at": "2026-05-17T17:53:31.759531",
+  "trained_at": "2026-05-23T12:35:31.387142",
   "feature_columns": [
     "amount",
     "hour",

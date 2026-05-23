@@ -298,6 +298,7 @@ class APIFraudDetector:
         self.api_url = api_url.rstrip('/')
         self.timeout = timeout
         self.session = requests.Session()
+        self.model_version = "1.0"  # fallback; overwritten after health check
 
     def predict_batch(self, transactions: List[Dict]) -> List[Dict]:
         """Call batch prediction API."""

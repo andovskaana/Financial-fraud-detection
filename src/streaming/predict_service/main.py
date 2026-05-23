@@ -27,7 +27,7 @@ try:
 except ImportError:
     HAS_SHAP = False
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 import uvicorn
 
@@ -462,26 +462,43 @@ async def predict_batch(batch: TransactionBatch):
 
 @app.get("/metrics")
 async def get_metrics():
-    """Prometheus-compatible metrics endpoint."""
-    metrics = []
+    """Prometheus-compatible metrics endpoint (text/plain exposition format)."""
+    lines = []
 
-    # Counter metrics
-    metrics.append(f'fraud_predictions_total {state.prediction_count}')
-    metrics.append(f'fraud_errors_total {state.error_count}')
+    # --- fraud_predictions_total (counter) ---
+    lines.append('# HELP fraud_predictions_total Total number of predictions served by this instance.')
+    lines.append('# TYPE fraud_predictions_total counter')
+    lines.append(f'fraud_predictions_total {state.prediction_count}')
 
-    # Gauge metrics
-    metrics.append(f'fraud_model_loaded {1 if state.is_loaded else 0}')
+    # --- fraud_errors_total (counter) ---
+    lines.append('# HELP fraud_errors_total Total number of prediction errors.')
+    lines.append('# TYPE fraud_errors_total counter')
+    lines.append(f'fraud_errors_total {state.error_count}')
 
+    # --- fraud_model_loaded (gauge) ---
+    lines.append('# HELP fraud_model_loaded 1 if the model is loaded and ready, 0 otherwise.')
+    lines.append('# TYPE fraud_model_loaded gauge')
+    lines.append(f'fraud_model_loaded {1 if state.is_loaded else 0}')
+
+    # --- fraud_service_uptime_seconds (gauge) ---
+    lines.append('# HELP fraud_service_uptime_seconds Seconds since the model was loaded.')
+    lines.append('# TYPE fraud_service_uptime_seconds gauge')
     if state.load_time:
         uptime = (datetime.utcnow() - state.load_time).total_seconds()
-        metrics.append(f'fraud_service_uptime_seconds {uptime}')
+        lines.append(f'fraud_service_uptime_seconds {uptime:.3f}')
+    else:
+        lines.append('fraud_service_uptime_seconds 0')
 
-    # R13: SHAP feature hit counters
-    for feature, count in state.shap_feature_hits.items():
-        safe_feat = feature.replace(' ', '_').replace('-', '_')
-        metrics.append(f'shap_feature_hits_total{{feature="{safe_feat}"}} {count}')
+    # --- shap_feature_hits_total (counter) ---
+    if state.shap_feature_hits:
+        lines.append('# HELP shap_feature_hits_total Number of times each feature appeared in top-3 SHAP for a fraud prediction.')
+        lines.append('# TYPE shap_feature_hits_total counter')
+        for feature, count in state.shap_feature_hits.items():
+            safe_feat = feature.replace(' ', '_').replace('-', '_')
+            lines.append(f'shap_feature_hits_total{{feature="{safe_feat}"}} {count}')
 
-    return "\n".join(metrics)
+    content = "\n".join(lines) + "\n"
+    return Response(content=content, media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/shap-stats")
