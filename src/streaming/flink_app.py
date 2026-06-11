@@ -304,6 +304,9 @@ def main():
     input_topic = "transactions"
     anomaly_topic = "anomaly_transactions"
     normal_topic = "normal_transactions"
+    # Combined enriched topic: every scored record is written here so that
+    # StreamingPipeline can consume pre-scored data without re-predicting.
+    flink_enriched_topic = os.environ.get("KAFKA_FLINK_ENRICHED_TOPIC", "flink_enriched_transactions")
 
     # -----------------------------------------------------------------------
     # Environment setup
@@ -370,17 +373,10 @@ def main():
     )
 
     # -----------------------------------------------------------------------
-    # Split into anomaly / normal downstream streams
-    # -----------------------------------------------------------------------
-    anomalies = enriched_stream.filter(
-        lambda x: json.loads(x).get("is_anomaly", False)
-    )
-    normals = enriched_stream.filter(
-        lambda x: not json.loads(x).get("is_anomaly", False)
-    )
-
-    # -----------------------------------------------------------------------
-    # Sinks
+    # Sink — Flink writes ONLY to the combined enriched topic.
+    # The StreamingPipeline consumer is the sole writer to anomaly_transactions
+    # and normal_transactions, which avoids double-routing and double-counting
+    # in the monitoring service.
     # -----------------------------------------------------------------------
     def _kafka_sink(topic: str) -> KafkaSink:
         return (
@@ -395,8 +391,7 @@ def main():
             .build()
         )
 
-    anomalies.sink_to(_kafka_sink(anomaly_topic))
-    normals.sink_to(_kafka_sink(normal_topic))
+    enriched_stream.sink_to(_kafka_sink(flink_enriched_topic))
 
     env.execute("Fraud Detection Flink Job")
 

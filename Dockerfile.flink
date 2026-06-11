@@ -1,0 +1,47 @@
+FROM python:3.11-slim-bookworm
+
+# PyFlink embeds a JVM via Py4J — Java 21 is the available version on bookworm
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends default-jre-headless curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Resolve JAVA_HOME from the default-jre symlink so it works on any Debian release
+RUN echo "export JAVA_HOME=$(dirname $(dirname $(readlink -f $(which java))))" >> /etc/environment
+ENV JAVA_HOME=/usr/lib/jvm/default-java
+
+WORKDIR /app
+
+COPY requirements_flink.txt .
+
+# Install apache-flink first, with a much higher timeout — the wheel bundles
+# the full Flink JARs (~500 MB) and regularly times out on slow links
+RUN pip install --no-cache-dir --timeout 600 --retries 5 apache-flink==1.20.0
+
+# Install the ML stack AFTER apache-flink. apache-flink pulls in apache-beam,
+# which pins an older numpy; installing numpy here (last) ensures the final
+# environment has the version scikit-learn/scipy require. Stay on the numpy
+# 1.x line (<2.0) — apache-beam's pyarrow dependency is compiled against the
+# numpy 1.x ABI and breaks with numpy 2.x ("_ARRAY_API not found").
+RUN pip install --no-cache-dir --timeout 600 --retries 5 \
+    "kafka-python>=2.0.2" \
+    "joblib>=1.3.0" \
+    "scikit-learn>=1.3.0" \
+    "xgboost>=2.0.0" \
+    "lightgbm>=4.0.0" \
+    "pandas>=2.0.0" \
+    "numpy>=1.26.4,<2.0" \
+    "lz4>=4.3.0"
+
+# Download the Flink Kafka connector JAR into the folder _find_kafka_jar() checks first
+RUN mkdir -p /app/src/streaming/jars && \
+    curl --retry 5 --retry-delay 5 -fL \
+    -o /app/src/streaming/jars/flink-sql-connector-kafka-3.4.0-1.20.jar \
+    "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.4.0-1.20/flink-sql-connector-kafka-3.4.0-1.20.jar"
+
+COPY src/ ./src/
+RUN mkdir -p /app/models
+
+ENV MODEL_PATH=/app/models/fraud_model.joblib
+ENV CONFIG_PATH=/app/models/feature_config.json
+
+CMD ["python", "src/streaming/flink_app.py"]

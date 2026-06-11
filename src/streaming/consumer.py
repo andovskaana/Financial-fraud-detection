@@ -331,17 +331,34 @@ class APIFraudDetector:
 class StreamingPipeline:
     """
     Main streaming pipeline: consume -> predict -> route
+
+    When require_flink=True (default) the pipeline reads from
+    config.flink_enriched_topic — records that Flink has already enriched with
+    fraud_score and is_anomaly — and routes without running a second inference
+    pass.  This enforces the invariant that prediction always goes through the
+    Flink keyed-stream layer before reaching this consumer.
+
+    Set require_flink=False only for local testing without a running Flink job.
     """
 
     def __init__(
         self,
-        detector: FraudDetector,
+        detector: Optional[FraudDetector],
         kafka_config: KafkaConfig = None,
-        batch_size: int = 100
+        batch_size: int = 100,
+        require_flink: bool = True,
     ):
         self.detector = detector
         self.config = kafka_config or KafkaConfig.from_env()
         self.batch_size = batch_size
+        self.require_flink = require_flink
+
+        if require_flink and detector is not None:
+            logger.info(
+                "require_flink=True: predictions will be read from Flink-enriched "
+                "records; the local FraudDetector will not be called for scoring."
+            )
+
         self.consumer = None
         self.router = None
 
@@ -356,9 +373,22 @@ class StreamingPipeline:
         """Initialize Kafka connections."""
         logger.info("Starting streaming pipeline...")
 
+        # When require_flink is True, consume from the Flink-enriched topic so
+        # that records already carry fraud_score and is_anomaly from Flink.
+        input_topic = (
+            self.config.flink_enriched_topic
+            if self.require_flink
+            else self.config.input_topic
+        )
+        logger.info(
+            "Consuming from topic: %s (require_flink=%s)",
+            input_topic,
+            self.require_flink,
+        )
+
         self.consumer = TransactionConsumer(
             config=self.config,
-            topics=[self.config.input_topic],
+            topics=[input_topic],
             auto_commit=False
         )
 
@@ -375,14 +405,28 @@ class StreamingPipeline:
         if not transactions:
             return 0, 0
 
-        # Get predictions
-        predictions = self.detector.predict_batch(transactions)
+        if self.require_flink:
+            # Records already enriched by Flink — extract fraud_score/is_anomaly
+            # directly from the record payload; no local inference needed.
+            predictions = [
+                {
+                    "fraud_score": float(tx.get("fraud_score", 0.0)),
+                    "is_anomaly": bool(tx.get("is_anomaly", False)),
+                }
+                for tx in transactions
+            ]
+            model_version = (
+                self.detector.model_version if self.detector else "flink"
+            )
+        else:
+            predictions = self.detector.predict_batch(transactions)
+            model_version = self.detector.model_version
 
         # Route to appropriate topics
         normal, anomaly = self.router.route_batch(
             transactions,
             predictions,
-            model_version=self.detector.model_version
+            model_version=model_version,
         )
 
         return normal, anomaly
@@ -512,6 +556,15 @@ def main():
         default=os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
         help='Kafka bootstrap servers'
     )
+    parser.add_argument(
+        '--no-flink',
+        action='store_true',
+        help=(
+            'Bypass Flink and predict locally (for testing without a running '
+            'Flink job). By default the pipeline reads from the Flink-enriched '
+            'topic and skips local inference.'
+        ),
+    )
 
     args = parser.parse_args()
 
@@ -521,20 +574,25 @@ def main():
         batch_size=args.batch_size
     )
 
-    # Initialize detector
+    require_flink = not args.no_flink
+
+    # Initialize detector — required when bypassing Flink, optional otherwise
     if args.mode == 'local':
         detector = FraudDetector(
             model_path=args.model,
             config_path=args.config
         ).load()
-    else:
+    elif args.mode == 'api':
         detector = APIFraudDetector(api_url=args.api_url)
+    else:
+        detector = None
 
     # Create and run pipeline
     pipeline = StreamingPipeline(
         detector=detector,
         kafka_config=kafka_config,
-        batch_size=args.batch_size
+        batch_size=args.batch_size,
+        require_flink=require_flink,
     )
 
     pipeline.start()

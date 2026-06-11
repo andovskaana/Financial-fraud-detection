@@ -390,6 +390,73 @@ class BatchFeatureEngineer:
 
         return df
 
+    def create_rule_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Compute batch equivalents of the two streaming post-prediction rules so
+        they can be used as model *input features* during training.
+
+        geo_velocity_flag (int 0/1)
+            Mirrors the streaming geographic rule: 1 if the sender's country
+            changed compared to their immediately previous transaction AND that
+            previous transaction was within geo_window_seconds (1 h).
+
+        seq_fraud_flag (int 0/1)
+            Mirrors the streaming sequential rule: 1 if the user had at least 2
+            consecutive fraud-labelled transactions immediately before the
+            current one.  Requires the target column to be present (training
+            only); defaults to 0 when labels are unavailable.
+
+        Both features are computed in strict chronological order per user so no
+        future information leaks into the feature value of any given row.
+        """
+        df = df.copy()
+        sender_col = self.config.sender_col
+        ts_col = self.config.timestamp_col
+        target_col = self.config.target_col
+        geo_window_seconds = 3600  # mirror streaming geo_window_seconds
+
+        if not pd.api.types.is_datetime64_any_dtype(df[ts_col]):
+            df[ts_col] = pd.to_datetime(df[ts_col], errors='coerce')
+
+        df = df.sort_values([sender_col, ts_col]).reset_index(drop=True)
+
+        # --- geo_velocity_flag ---
+        geo_flag = np.zeros(len(df), dtype=np.int32)
+        if self.config.sender_country_col and self.config.sender_country_col in df.columns:
+            ts_ns = df[ts_col].values.astype('datetime64[ns]').astype(np.int64)
+            country_vals = df[self.config.sender_country_col].values
+            sender_vals = df[sender_col].values
+            prev_ts: dict = {}
+            prev_country: dict = {}
+            for i in range(len(df)):
+                uid = sender_vals[i]
+                if uid in prev_ts:
+                    elapsed_s = (ts_ns[i] - prev_ts[uid]) / 1e9
+                    if elapsed_s <= geo_window_seconds and prev_country[uid] != country_vals[i]:
+                        geo_flag[i] = 1
+                prev_ts[uid] = ts_ns[i]
+                prev_country[uid] = country_vals[i]
+
+        df['geo_velocity_flag'] = geo_flag
+
+        # --- seq_fraud_flag ---
+        # For each transaction: 1 if the user had >= 2 consecutive fraud labels
+        # immediately before this transaction (resets to 0 on any non-fraud tx).
+        seq_flag = np.zeros(len(df), dtype=np.int32)
+        if target_col in df.columns:
+            fraud_vals = pd.to_numeric(df[target_col], errors='coerce').fillna(0).astype(int).values
+            sender_vals = df[sender_col].values
+            consecutive: dict = {}
+            for i in range(len(df)):
+                uid = sender_vals[i]
+                count = consecutive.get(uid, 0)
+                seq_flag[i] = 1 if count >= 2 else 0
+                consecutive[uid] = count + 1 if fraud_vals[i] == 1 else 0
+
+        df['seq_fraud_flag'] = seq_flag
+
+        return df
+
     def get_feature_columns(self, df: pd.DataFrame) -> List[str]:
         """Get list of feature columns for model training."""
         feature_cols = []
@@ -422,6 +489,11 @@ class BatchFeatureEngineer:
         # Country features
         if 'is_cross_border' in df.columns:
             feature_cols.append('is_cross_border')
+
+        # Rule-derived features (only present when create_rule_features() was called)
+        for rule_col in ['geo_velocity_flag', 'seq_fraud_flag']:
+            if rule_col in df.columns:
+                feature_cols.append(rule_col)
 
         # Encoded categoricals
         encoded_cols = [c for c in df.columns if c.endswith('_encoded')]
@@ -621,7 +693,7 @@ class StreamingFeatureState:
 
         The value exposed as prev_fraud_count must represent only transactions
         before the current one, so this method is intentionally called after
-        model/rule evaluation. In streaming, the prediction is the available
+        model/ evaluation. In streaming, the prediction is the available
         fraud label; in offline replay, pass the known ground-truth label.
         """
         if not is_fraud:

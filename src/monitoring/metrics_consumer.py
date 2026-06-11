@@ -362,7 +362,8 @@ class MonitoringPipeline:
         kafka_config: KafkaConfig = None,
         topics: list = None,
         metrics_port: int = 9090,
-        enable_console: bool = True
+        enable_console: bool = True,
+        shap_importance_path: str = None,
     ):
         self.config = kafka_config or KafkaConfig.from_env()
         self.topics = topics or [
@@ -372,7 +373,9 @@ class MonitoringPipeline:
         self.metrics_port = metrics_port
         self.enable_console = enable_console
 
-        self.collector = MetricsCollector()
+        self.collector = MetricsCollector(
+            shap_importance_path=shap_importance_path or os.getenv('SHAP_IMPORTANCE_PATH')
+        )
         self.consumer = None
 
     def start(self):

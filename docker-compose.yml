@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   # Zookeeper for Kafka
   zookeeper:
@@ -58,9 +56,31 @@ services:
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic transactions --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic normal_transactions --partitions 3 --replication-factor 1
       kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic anomaly_transactions --partitions 3 --replication-factor 1
+      kafka-topics --bootstrap-server kafka:29092 --create --if-not-exists --topic flink_enriched_transactions --partitions 3 --replication-factor 1
       echo 'Topics created:'
       kafka-topics --bootstrap-server kafka:29092 --list
       "
+
+  # Flink streaming job — reads raw transactions, scores them, writes to
+  # flink_enriched_transactions (+ splits to anomaly/normal topics)
+  flink-job:
+    build:
+      context: .
+      dockerfile: Dockerfile.flink
+    container_name: fraud-flink-job
+    depends_on:
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
+      - KAFKA_FLINK_ENRICHED_TOPIC=flink_enriched_transactions
+      - MODEL_PATH=/app/models/fraud_model.joblib
+      - CONFIG_PATH=/app/models/feature_config.json
+    volumes:
+      - ./models:/app/models:ro
+    restart: unless-stopped
 
   # Fraud Detection Predict Service (FastAPI)
   predict-service:
@@ -83,7 +103,7 @@ services:
       retries: 5
     restart: unless-stopped
 
-  # Fraud Detection Consumer (processes transactions)
+  # Fraud Detection Consumer — reads Flink-enriched records and routes them
   fraud-consumer:
     build:
       context: .
@@ -94,11 +114,14 @@ services:
         condition: service_healthy
       kafka-init:
         condition: service_completed_successfully
+      flink-job:
+        condition: service_started
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:29092
       - KAFKA_INPUT_TOPIC=transactions
       - KAFKA_NORMAL_TOPIC=normal_transactions
       - KAFKA_ANOMALY_TOPIC=anomaly_transactions
+      - KAFKA_FLINK_ENRICHED_TOPIC=flink_enriched_transactions
       - KAFKA_CONSUMER_GROUP=fraud-detector
       - KAFKA_BATCH_SIZE=100
     volumes:
@@ -125,6 +148,11 @@ services:
       - SHAP_IMPORTANCE_PATH=/app/models/shap_importance.json
     volumes:
       - ./models:/app/models:ro
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9090/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   # Transaction Simulator (produces test transactions)
@@ -165,26 +193,28 @@ services:
     profiles:
       - debug
 
-  # Prometheus (optional)
+  # Prometheus — scrapes monitoring:9090 and predict-service:8000
   prometheus:
     image: prom/prometheus:latest
     container_name: fraud-prometheus
     depends_on:
+      monitoring:
+        condition: service_started
       predict-service:
         condition: service_healthy
     ports:
       - "9091:9090"
     volumes:
       - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
-    profiles:
-      - observability
+    restart: unless-stopped
 
-  # Grafana (optional) — auto-provisions Prometheus datasource + fraud dashboard
+  # Grafana — auto-provisions Prometheus datasource + fraud dashboard
   grafana:
     image: grafana/grafana:latest
     container_name: fraud-grafana
     depends_on:
-      - prometheus
+      prometheus:
+        condition: service_started
     ports:
       - "3000:3000"
     environment:
@@ -194,8 +224,7 @@ services:
       - grafana-data:/var/lib/grafana
       - ./grafana/provisioning:/etc/grafana/provisioning
       - ./grafana/dashboards:/var/lib/grafana/dashboards
-    profiles:
-      - observability
+    restart: unless-stopped
 
 volumes:
   grafana-data:

@@ -29,6 +29,9 @@ class KafkaConfig:
     input_topic: str = os.getenv('KAFKA_INPUT_TOPIC', 'transactions')
     normal_topic: str = os.getenv('KAFKA_NORMAL_TOPIC', 'normal_transactions')
     anomaly_topic: str = os.getenv('KAFKA_ANOMALY_TOPIC', 'anomaly_transactions')
+    # Combined enriched-output topic written by Flink before the anomaly/normal split.
+    # StreamingPipeline reads from here so prediction always goes through Flink first.
+    flink_enriched_topic: str = os.getenv('KAFKA_FLINK_ENRICHED_TOPIC', 'flink_enriched_transactions')
     consumer_group: str = os.getenv('KAFKA_CONSUMER_GROUP', 'fraud-detector')
     batch_size: int = int(os.getenv('KAFKA_BATCH_SIZE', '100'))
     batch_timeout_ms: int = int(os.getenv('KAFKA_BATCH_TIMEOUT_MS', '1000'))

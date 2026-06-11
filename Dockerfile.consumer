@@ -1,15 +1,14 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl \
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for caching
 COPY requirements_consumer.txt .
-RUN pip install --no-cache-dir -r requirements_consumer.txt
+RUN pip install --no-cache-dir --timeout 120 --retries 5 -r requirements_consumer.txt
 
 # Copy source code
 COPY src/ ./src/
