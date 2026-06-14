@@ -16,7 +16,12 @@ from datetime import datetime
 import logging
 
 from kafka import KafkaProducer, KafkaConsumer
-from kafka.errors import KafkaError, NoBrokersAvailable
+from kafka.errors import KafkaError
+try:
+    from kafka.errors import NoBrokersAvailable
+except ImportError:
+    # kafka-python >= 2.1 removed NoBrokersAvailable; KafkaConnectionError is the replacement
+    from kafka.errors import KafkaConnectionError as NoBrokersAvailable
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)

@@ -26,6 +26,8 @@ from pyflink.common.typeinfo import Types
 from pyflink.common.watermark_strategy import WatermarkStrategy
 from pyflink.datastream import StreamExecutionEnvironment
 from pyflink.datastream.connectors.kafka import (
+    DeliveryGuarantee,
+    KafkaOffsetsInitializer,
     KafkaRecordSerializationSchema,
     KafkaSink,
     KafkaSource,
@@ -188,6 +190,8 @@ class FraudKeyedFn(KeyedProcessFunction):
             "fraud_score": result["fraud_score"],
             "is_anomaly": result["is_anomaly"],
         }
+        if result.get("top_shap_features"):
+            enriched["top_shap_features"] = result["top_shap_features"]
         yield json.dumps(enriched)
 
     # ------------------------------------------------------------------
@@ -302,11 +306,9 @@ def main():
     kafka_bootstrap = os.environ.get("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 
     input_topic = "transactions"
-    anomaly_topic = "anomaly_transactions"
-    normal_topic = "normal_transactions"
-    # Combined enriched topic: every scored record is written here so that
-    # StreamingPipeline can consume pre-scored data without re-predicting.
-    flink_enriched_topic = os.environ.get("KAFKA_FLINK_ENRICHED_TOPIC", "flink_enriched_transactions")
+    flink_enriched_topic = os.environ.get(
+        "KAFKA_FLINK_ENRICHED_TOPIC", "flink_enriched_transactions"
+    )
 
     # -----------------------------------------------------------------------
     # Environment setup
@@ -324,6 +326,7 @@ def main():
         .set_topics(input_topic)
         .set_group_id("fraud-flink")
         .set_value_only_deserializer(SimpleStringSchema())
+        .set_starting_offsets(KafkaOffsetsInitializer.latest())
         .build()
     )
 
@@ -341,27 +344,14 @@ def main():
     )
 
     # -----------------------------------------------------------------------
-    # R7 — key_by(sender_account)
-    #
-    # This converts the DataStream into a KeyedStream partitioned by user.
-    # All records with the same sender_account are routed to the same Flink
-    # sub-task, which means:
-    #   • Per-user Flink state is local to one slot — no cross-slot lookups.
-    #   • Parallelism can be raised above 1 without state corruption.
-    #   • Kafka's own transport-level keying (already present in the producer)
-    #     is now *also* enforced inside the Flink topology.
+    # key_by(sender_account) — KeyedStream partitioned per user
     # -----------------------------------------------------------------------
     keyed_stream = stream.key_by(
         lambda x: json.loads(x).get("sender_account", "unknown")
     )
 
     # -----------------------------------------------------------------------
-    # R8 — KeyedProcessFunction with Flink-managed ValueState
-    #
-    # FraudKeyedFn replaces the old FraudMapFunction.  The critical difference:
-    #   OLD: plain Python dict inside MapFunction.open() — not checkpointed.
-    #   NEW: Flink ValueState registered via get_runtime_context().get_state()
-    #        — checkpointed, recoverable on restart, distributed correctly.
+    # KeyedProcessFunction with Flink-managed ValueState
     # -----------------------------------------------------------------------
     enriched_stream = (
         keyed_stream
@@ -373,26 +363,23 @@ def main():
     )
 
     # -----------------------------------------------------------------------
-    # Sink — Flink writes ONLY to the combined enriched topic.
-    # The StreamingPipeline consumer is the sole writer to anomaly_transactions
-    # and normal_transactions, which avoids double-routing and double-counting
-    # in the monitoring service.
+    # Sink — write enriched records to flink_enriched_transactions.
+    # fraud-consumer reads from there and routes to anomaly/normal topics.
     # -----------------------------------------------------------------------
-    def _kafka_sink(topic: str) -> KafkaSink:
-        return (
-            KafkaSink.builder()
-            .set_bootstrap_servers(kafka_bootstrap)
-            .set_record_serializer(
-                KafkaRecordSerializationSchema.builder()
-                .set_topic(topic)
-                .set_value_serialization_schema(SimpleStringSchema())
-                .build()
-            )
+    sink = (
+        KafkaSink.builder()
+        .set_bootstrap_servers(kafka_bootstrap)
+        .set_record_serializer(
+            KafkaRecordSerializationSchema.builder()
+            .set_topic(flink_enriched_topic)
+            .set_value_serialization_schema(SimpleStringSchema())
             .build()
         )
+        .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE)
+        .build()
+    )
 
-    enriched_stream.sink_to(_kafka_sink(flink_enriched_topic))
-
+    enriched_stream.sink_to(sink)
     env.execute("Fraud Detection Flink Job")
 
 

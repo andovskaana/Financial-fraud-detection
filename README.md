@@ -1,65 +1,90 @@
 # Financial Fraud Detection System
 
-End-to-end ML system for real-time fraud detection in financial transactions with offline training, online streaming inference via Kafka, and monitoring dashboards.
+End-to-end ML system for real-time fraud detection in financial transactions with offline training, online streaming inference via Apache Flink and Kafka, SHAP explainability, and live monitoring dashboards.
 
 ## Architecture
 
 ```
                                     ┌─────────────────┐
-                                    │   Training      │
-                                    │   (Batch)       │
+                                    │    Training     │
+                                    │    (Batch)      │
                                     └────────┬────────┘
-                                             │
+                                             │ fraud_model.joblib
                                              ▼
-┌──────────────┐    ┌─────────────┐   ┌─────────────────┐   ┌─────────────────┐
-│ Transactions │───▶│   Kafka     │──▶│  Fraud Detector │──▶│  Kafka Topics   │
-│   (Input)    │    │ (streaming) │   │  (Consumer)     │   │ normal/anomaly  │
-└──────────────┘    └─────────────┘   └─────────────────┘   └────────┬────────┘
-                                                                     │
-                                    ┌────────────────────────────────┤
-                                    │                                │
-                                    ▼                                ▼
-                           ┌─────────────────┐              ┌─────────────────┐
-                           │   Monitoring    │              │   Downstream    │
-                           │   Dashboard     │              │   Systems       │
-                           └─────────────────┘              └─────────────────┘
+┌──────────────┐    ┌─────────────┐   ┌─────────────────┐   ┌──────────────────────────┐
+│ Transactions │───▶│    Kafka    │──▶│   Flink Job     │──▶│ flink_enriched_          │
+│  (Simulator) │    │ transactions│   │ (FraudKeyedFn)  │   │ transactions topic       │
+└──────────────┘    └─────────────┘   └─────────────────┘   └────────────┬─────────────┘
+                                                                          │
+                                                                          ▼
+                                                               ┌─────────────────────┐
+                                                               │   fraud-consumer    │
+                                                               │  (routing + SHAP)   │
+                                                               └──────────┬──────────┘
+                                                                          │
+                                              ┌───────────────────────────┤
+                                              │                           │
+                                              ▼                           ▼
+                                   normal_transactions        anomaly_transactions
+                                              │                           │
+                                              └─────────────┬─────────────┘
+                                                            ▼
+                                                 ┌─────────────────────┐
+                                                 │     monitoring      │
+                                                 │  Prometheus :9090   │
+                                                 └──────────┬──────────┘
+                                                            ▼
+                                                 ┌─────────────────────┐
+                                                 │  Prometheus :9091   │
+                                                 │    Grafana :3000    │
+                                                 └─────────────────────┘
 ```
 
 ## Features
 
-- **Offline Training**: XGBoost/LightGBM model with class imbalance handling
-- **Streaming Features**: Velocity features with bounded state (5m/1h/24h windows)
+- **Offline Training**: XGBoost/LightGBM model with class imbalance handling and F2-optimized threshold
+- **Flink Streaming Inference**: Per-user keyed state with fault-tolerant ValueState and 24h TTL
+- **Velocity Features**: Bounded per-user history (5m / 1h / 24h windows) consistent between training and streaming
+- **SHAP Explainability**: Offline global importance + online per-prediction top-3 features for every anomaly
 - **High Throughput**: Batched Kafka processing, ~100K+ tx/sec
 - **Adaptive Columns**: Automatically detects and uses available dataset columns
 - **Cost-Sensitive**: F2 score optimization (recall-weighted for fraud detection)
-- **Monitoring**: Prometheus metrics + console dashboard
+- **Monitoring**: Prometheus metrics + Grafana dashboard with live panels
 
 ## Project Structure
 
 ```
-Financial-fraud-detection/
+finance/
 ├── src/
 │   ├── training/
-│   │   ├── features.py      # Feature engineering (batch + streaming)
-│   │   ├── train.py         # Model training pipeline
-│   │   └── evaluate.py      # Evaluation metrics & plots
+│   │   ├── features.py           # Feature engineering (batch + streaming)
+│   │   ├── train.py              # Model training pipeline
+│   │   └── evaluate.py           # Evaluation metrics & plots
 │   ├── streaming/
-│   │   ├── kafka_io.py      # Kafka producer/consumer utilities
-│   │   ├── kafka_producer.py # Simulation producer
-│   │   ├── consumer.py      # Main fraud detection consumer
-│   │   └── predict_service/ # FastAPI inference service
+│   │   ├── kafka_io.py           # Kafka producer/consumer utilities
+│   │   ├── kafka_producer.py     # Simulation producer
+│   │   ├── flink_app.py          # Flink streaming job (scoring layer)
+│   │   ├── consumer.py           # StreamingPipeline — routing + rules
+│   │   └── predict_service/      # FastAPI inference service
 │   └── monitoring/
-│       └── metrics_consumer.py  # Prometheus metrics
-├── models/                  # Model artifacts (generated)
-├── docker-compose.yml       # Full stack deployment
-├── Dockerfile.*            # Service containers
-├── requirements.txt
-└── README.md
+│       └── metrics_consumer.py   # Prometheus metrics exporter
+├── grafana/
+│   ├── dashboards/               # Auto-provisioned Grafana dashboard JSON
+│   └── provisioning/             # Datasource + dashboard provisioning
+├── models/                       # Model artifacts (generated by training)
+├── docker-compose.yml            # Full stack deployment
+├── Dockerfile.flink              # Flink job container
+├── Dockerfile.consumer           # Routing consumer container
+├── Dockerfile.predict            # FastAPI predict service container
+├── Dockerfile.monitoring         # Monitoring container
+├── Dockerfile.simulator          # Transaction simulator container
+├── shap_explain.py               # Offline SHAP analysis script
+└── requirements.txt              # Local training dependencies
 ```
 
 ## Quick Start
 
-### 1. Install Dependencies
+### 1. Install Dependencies (local training only)
 
 ```bash
 pip install -r requirements.txt
@@ -67,102 +92,66 @@ pip install -r requirements.txt
 
 ### 2. Train the Model
 
-Place your dataset CSV in the project root, then:
-
 ```bash
-python -m src.training.train --data financial_fraud_detection_dataset.csv --output models
+python -m src.training.train --data models/data/financial_fraud_detection_dataset.csv --output models
 ```
 
 This will:
 - Perform EDA and feature engineering
-- Split data (60% train, 20% test, 20% holdout for streaming)
+- Split data (60% train, 20% test, 20% holdout for streaming simulation)
 - Train XGBoost model with class imbalance handling
 - Find optimal threshold (F2-optimized)
 - Save `models/fraud_model.joblib` and `models/feature_config.json`
-- Save holdout set for streaming simulation
+- Save holdout set for the streaming simulator
 
-### 3. Start Streaming Infrastructure
+### 2.1. Generate Offline SHAP Importance
 
 ```bash
-# Start Kafka + Zookeeper
-docker-compose up -d kafka zookeeper kafka-init
-
-# Wait for Kafka to be ready
-docker-compose logs -f kafka-init
+python shap_explain.py --data models/data/financial_fraud_detection_dataset.csv --output models
 ```
 
-### 4. Run Fraud Detection Consumer
+This produces `models/shap_importance.json`, which populates the **Offline SHAP Feature Importance** panel in Grafana immediately on startup, before any live transactions arrive.
+
+### 3. Start All Services
 
 ```bash
-# Option A: Run locally
-python -m src.streaming.consumer --mode local
-
-# Option B: Run in Docker
-docker-compose up -d fraud-consumer
-```
-
-### 5. Simulate Transactions
-
-```bash
-# Option A: Run locally
-python -m src.streaming.kafka_producer --data models/data/streaming_holdout.csv
-
-# Option B: Run in Docker (burst test)
-docker-compose --profile simulation up simulator
-```
-
-### 6. Monitor Results
-
-```bash
-# Option A: Run locally with console dashboard
-python -m src.monitoring.metrics_consumer
-
-# Option B: Run in Docker
-docker-compose up -d monitoring
-
-# Access metrics at http://localhost:9090/metrics
-```
-
-## Full Docker Deployment
-
-```bash
-# Build and start everything
-docker-compose up -d
-
-# Run simulation (after services are ready)
-docker-compose --profile simulation up simulator
-
-# Optional: Add Kafka UI for debugging
-docker-compose --profile debug up -d kafka-ui
-# Access at http://localhost:8080
-
-# Optional: Add Prometheus + Grafana
+docker-compose up -d --build zookeeper kafka kafka-init predict-service flink-job fraud-consumer monitoring
 docker-compose --profile observability up -d
-# Prometheus: http://localhost:9091
-# Grafana: http://localhost:3000 (admin/admin)
 ```
 
-## Training Options
+Services start in dependency order: Zookeeper → Kafka → topic creation → Flink job → fraud-consumer → monitoring → Prometheus → Grafana. Allow around a minute for all services to become healthy, particularly the Flink job which loads the model and Kafka connector on startup.
+
+### 4. Run the Simulation
 
 ```bash
-python -m src.training.train \
-    --data your_dataset.csv \
-    --output models \
-    --model-type xgboost \           # or lightgbm, random_forest
-    --threshold-method f2 \          # or cost, recall_at_precision
-    --min-precision 0.5              # for recall_at_precision method
+docker-compose --profile simulation up simulator
 ```
 
-## Streaming Consumer Options
+This replays the holdout CSV (~1M transactions) through Kafka at maximum speed, producing live data visible in the Grafana dashboard within seconds.
 
-```bash
-python -m src.streaming.consumer \
-    --mode local \                   # or api (for external service)
-    --model models/fraud_model.joblib \
-    --config models/feature_config.json \
-    --batch-size 100 \
-    --kafka-servers localhost:9092
+### 5. Open Grafana Dashboard
+
 ```
+http://localhost:3000   →   login: admin / admin
+```
+
+The dashboard is auto-provisioned — no manual setup required. Set the time range to **Last 30 minutes** and refresh to **10s** to watch the panels update in real time.
+
+## How the Flink Job Works
+
+The Flink job (`src/streaming/flink_app.py`) is the inference layer of the pipeline. Raw transactions arrive on the `transactions` Kafka topic; the Flink job scores them and writes enriched records to `flink_enriched_transactions`. The `fraud-consumer` then reads those pre-scored records and routes them to `normal_transactions` or `anomaly_transactions` — it never runs inference itself.
+
+Inside the Flink job, the stream is partitioned by `sender_account` (`key_by`), ensuring all transactions for the same user are processed by the same task slot. Each slot maintains a Flink-managed `ValueState` holding up to **20 transactions** of history per user. Before every prediction, the `StreamingFeatureState` is hydrated from this state so that velocity features are computed correctly:
+
+| Window | Features computed |
+|--------|-------------------|
+| 5 minutes | `tx_count_5m`, `amount_sum_5m`, `amount_avg_5m` |
+| 1 hour | `tx_count_60m`, `amount_sum_60m`, `amount_avg_60m`, `unique_receivers_1h` |
+| 24 hours | `tx_count_1440m`, `amount_sum_1440m`, `amount_avg_1440m`, `amount_to_rolling_avg_ratio` |
+
+Transactions older than 24 hours are purged before each computation, so the 20-entry cap is sufficient for all realistic user activity rates. A processing-time TTL timer fires 24 hours after a user's last transaction and clears their state entirely, preventing unbounded memory growth.
+
+For every anomaly, the job also computes the top-3 SHAP feature contributions and includes them in the enriched record, feeding the **Online SHAP Feature Hits** panel in Grafana.
 
 ## Configuration
 
@@ -170,128 +159,84 @@ Environment variables (see `.env.example`):
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker addresses |
-| `KAFKA_INPUT_TOPIC` | `transactions` | Input topic name |
-| `KAFKA_NORMAL_TOPIC` | `normal_transactions` | Normal output topic |
-| `KAFKA_ANOMALY_TOPIC` | `anomaly_transactions` | Anomaly output topic |
-| `KAFKA_BATCH_SIZE` | `100` | Batch size for processing |
-| `MODEL_PATH` | `models/fraud_model.joblib` | Model file path |
-| `CONFIG_PATH` | `models/feature_config.json` | Config file path |
+| `KAFKA_BOOTSTRAP_SERVERS` | `localhost:9092` | Kafka broker address |
+| `KAFKA_INPUT_TOPIC` | `transactions` | Raw transaction input topic |
+| `KAFKA_FLINK_ENRICHED_TOPIC` | `flink_enriched_transactions` | Flink scored output topic |
+| `KAFKA_NORMAL_TOPIC` | `normal_transactions` | Routed normal transactions |
+| `KAFKA_ANOMALY_TOPIC` | `anomaly_transactions` | Routed anomaly transactions |
+| `KAFKA_BATCH_SIZE` | `100` | Batch size for consumer routing |
+| `MODEL_PATH` | `models/fraud_model.joblib` | Trained model path |
+| `CONFIG_PATH` | `models/feature_config.json` | Feature configuration path |
 
 ## Feature Engineering
 
 ### Batch Features (Training)
 - **DateTime**: hour, day, day_of_week, week, month, is_weekend, is_night
 - **User Aggregates**: avg/std/min/max amount, transaction count
-- **Velocity Windows**: count, sum, avg in 5m/1h/24h windows
-- **Ratios**: amount_to_user_avg, amount_zscore, amount_to_rolling_avg
-- **Cross-border**: is_cross_border (if country columns exist)
-- **Encoded Categoricals**: transaction_type, country codes
+- **Velocity Windows**: count, sum, avg in 5m / 1h / 24h windows
+- **Ratios**: amount_to_user_avg, amount_zscore, amount_to_rolling_avg_ratio
+- **Cross-border**: is_cross_border (when country columns are present)
+- **Encoded Categoricals**: transaction_type, sender/receiver country codes
 
-### Streaming Features
-Uses bounded state per user:
-- Max 20 transactions history
-- 24h TTL for old transactions
-- Same velocity calculations as batch
+### Streaming Features (Flink)
+Identical to batch, computed from bounded per-user state:
+- Maximum 20 transactions in history per user
+- 24h TTL — old transactions removed before every prediction
+- Same velocity window logic as training, ensuring train/serve consistency
+
+## Monitoring — Prometheus Metrics
+
+Raw metrics are exposed at `http://localhost:9090/metrics` in standard Prometheus text format. The following metrics are collected:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `fraud_anomalies_total` | Counter | Total anomaly transactions detected |
+| `fraud_normal_total` | Counter | Total normal transactions processed |
+| `fraud_processed_total` | Counter | Total transactions processed (all) |
+| `fraud_anomaly_rate` | Gauge | Anomalies per second (60s rolling window) |
+| `fraud_avg_anomaly_amount` | Gauge | Average monetary amount of anomaly transactions |
+| `fraud_score_bucket` | Histogram | Distribution of fraud scores across 0.0–1.0 buckets |
+| `shap_offline_importance` | Gauge | Per-feature global SHAP importance from `shap_importance.json` |
+| `shap_feature_hits_total` | Counter | Per-feature online SHAP hit count from live anomaly predictions |
+
+Prometheus scrapes these metrics and makes them available to Grafana at `http://localhost:9091`.
+
+## Grafana Dashboard
+
+The dashboard at `http://localhost:3000` is fully auto-provisioned from `grafana/dashboards/fraud_detection.json` and contains eleven panels across three rows:
+
+**Summary stats (top row)**
+- Total Processed, Total Anomalies, Fraud Rate %, Avg Anomaly Amount, Anomalies/sec
+
+**Time series (middle row)**
+- Transactions per Second (total, normal, anomaly breakdown)
+- Fraud Rate Over Time (%)
+- Model Predictions (predict service throughput)
+
+**Distributions and SHAP (bottom row)**
+- Fraud Score Distribution — bar gauge across 0.0–1.0 score buckets
+- Offline SHAP Feature Importance — top-10 features by mean |SHAP| from the training analysis
+- Online SHAP Feature Hits — real-time counter of which features most frequently drive live fraud predictions
 
 ## Performance
 
 Target throughput: **~100K+ transactions in ~5 seconds**
 
 Achieved through:
-- Batched Kafka consumption/production
-- In-process model inference (no API calls per transaction)
+- Flink keyed-stream partitioning — per-user state local to one task slot, no cross-slot coordination
+- Batched Kafka consumption and production
+- In-process model inference within the Flink task (no network calls per transaction)
 - LZ4 compression for Kafka messages
-- Bounded user state (no memory leaks)
-
-## API Endpoints (Predict Service)
-
-When running the FastAPI predict service:
-
-```bash
-# Single prediction
-curl -X POST http://localhost:8000/predict \
-  -H "Content-Type: application/json" \
-  -d '{"transaction_id": "tx1", "timestamp": "2024-01-01T12:00:00", "sender_account": "acc1", "amount": 1000.0}'
-
-# Batch prediction
-curl -X POST http://localhost:8000/predict/batch \
-  -H "Content-Type: application/json" \
-  -d '{"transactions": [...]}'
-
-# Health check
-curl http://localhost:8000/health
-
-# Prometheus metrics
-curl http://localhost:8000/metrics
-```
-
-## Output Schema
-
-Messages in normal_transactions / anomaly_transactions topics:
-
-```json
-{
-  "transaction_id": "tx123",
-  "timestamp": "2024-01-01T12:00:00",
-  "sender_account": "acc456",
-  "amount": 5000.0,
-  "fraud_score": 0.85,
-  "is_anomaly": true,
-  "model_version": "1.0",
-  "processed_at": "2024-01-01T12:00:01.123Z"
-}
-```
-
-## Monitoring Metrics
-
-Prometheus metrics available at `/metrics`:
-
-- `fraud_anomalies_total` - Total anomalies detected
-- `fraud_normal_total` - Total normal transactions
-- `fraud_anomaly_rate` - Anomalies per second (windowed)
-- `fraud_avg_anomaly_amount` - Average anomaly transaction amount
-- `fraud_score_bucket` - Score distribution histogram
-
-## Development
-
-```bash
-# Run tests
-pytest tests/
-
-# Format code
-black src/
-isort src/
-
-# Type checking
-mypy src/
-```
+- Bounded per-user state — O(1) memory per user, no risk of memory leaks
 
 ## Troubleshooting
 
-### Kafka Connection Issues
-```bash
-# Check Kafka is running
-docker-compose ps
-docker-compose logs kafka
-
-# Test connectivity
-kafka-topics --bootstrap-server localhost:9092 --list
-```
-
-### Model Not Found
-```bash
-# Ensure model is trained
-python -m src.training.train --data your_data.csv
-
-# Check model files exist
-ls -la models/
-```
+### Grafana shows "No data"
+Allow 1–2 minutes after starting the simulator for data to flow through Flink → consumer → monitoring → Prometheus → Grafana. Set Grafana time range to **Last 30 minutes**.
 
 ### Out of Memory
-- Reduce `KAFKA_BATCH_SIZE`
-- Ensure bounded state is working (check `max_history_per_user`)
-- Increase container memory limits in docker-compose.yml
+- Reduce `KAFKA_BATCH_SIZE` in `docker-compose.yml`
+- Increase container memory limits in `docker-compose.yml`
 
 ## License
 

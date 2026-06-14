@@ -13,8 +13,8 @@ WORKDIR /app
 
 COPY requirements_flink.txt .
 
-# Install apache-flink first, with a much higher timeout — the wheel bundles
-# the full Flink JARs (~500 MB) and regularly times out on slow links
+# Install apache-flink first — the wheel bundles the full Flink JARs (~500 MB)
+# and regularly times out on slow links, hence the high timeout.
 RUN pip install --no-cache-dir --timeout 600 --retries 5 apache-flink==1.20.0
 
 # Install the ML stack AFTER apache-flink. apache-flink pulls in apache-beam,
@@ -32,11 +32,20 @@ RUN pip install --no-cache-dir --timeout 600 --retries 5 \
     "numpy>=1.26.4,<2.0" \
     "lz4>=4.3.0"
 
-# Download the Flink Kafka connector JAR into the folder _find_kafka_jar() checks first
+# Download the Flink Kafka connector JAR with aggressive retry/timeout settings.
+# --retry-all-errors covers transient Maven Central flakiness.
+# The JAR is ~11 MB; 300s max-time is generous even on slow links.
 RUN mkdir -p /app/src/streaming/jars && \
-    curl --retry 5 --retry-delay 5 -fL \
-    -o /app/src/streaming/jars/flink-sql-connector-kafka-3.4.0-1.20.jar \
-    "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.4.0-1.20/flink-sql-connector-kafka-3.4.0-1.20.jar"
+    curl --retry 10 \
+         --retry-delay 5 \
+         --retry-max-time 300 \
+         --connect-timeout 30 \
+         --max-time 300 \
+         --retry-all-errors \
+         -fL \
+         -o /app/src/streaming/jars/flink-sql-connector-kafka-3.4.0-1.20.jar \
+         "https://repo1.maven.org/maven2/org/apache/flink/flink-sql-connector-kafka/3.4.0-1.20/flink-sql-connector-kafka-3.4.0-1.20.jar" \
+    && echo "JAR downloaded OK: $(du -h /app/src/streaming/jars/*.jar)"
 
 COPY src/ ./src/
 RUN mkdir -p /app/models
