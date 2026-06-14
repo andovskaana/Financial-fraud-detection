@@ -101,7 +101,7 @@ class ColumnDetector:
         'receiver_account': ['receiver_account', 'receiver', 'to_account', 'dest_account', 'destination_account'],
         'amount': ['amount', 'transaction_amount', 'value', 'amt'],
         'transaction_type': ['transaction_type', 'type', 'trans_type', 'category'],
-        'sender_country': ['sender_country', 'from_country', 'source_country', 'country'],
+        'sender_country': ['sender_country', 'from_country', 'source_country', 'country', 'location'],
         'receiver_country': ['receiver_country', 'to_country', 'dest_country', 'destination_country'],
         'is_fraud': ['is_fraud', 'fraud', 'label', 'target', 'is_fraudulent', 'fraudulent']
     }

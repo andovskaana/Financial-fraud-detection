@@ -3,7 +3,7 @@
   "model_type": "XGBClassifier",
   "feature_count": 37,
   "anomaly_threshold": 0.01,
-  "trained_at": "2026-06-08T23:27:02.400921",
+  "trained_at": "2026-06-14T15:59:47.157655",
   "feature_columns": [
     "amount",
     "hour",
@@ -34,8 +34,8 @@
     "amount_to_rolling_avg_ratio",
     "unique_receivers_1h",
     "transaction_type_encoded",
-    "merchant_category_encoded",
     "location_encoded",
+    "merchant_category_encoded",
     "device_used_encoded",
     "fraud_type_encoded",
     "velocity_score_encoded",
